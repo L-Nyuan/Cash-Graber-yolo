@@ -1,0 +1,6 @@
+*.pt
+test_output/
+dataset/
+dataset_temp/
+/.vscode/
+/scripts/logs/
