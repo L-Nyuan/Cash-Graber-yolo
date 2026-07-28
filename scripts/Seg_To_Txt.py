@@ -134,7 +134,7 @@ class CEPBProcessor:
         self.h = 1536 # 图像高度
         self.w = 2048 # 图像宽度
         self.vis = 0.2 # 可见度阈值，低于该阈值的物体不参与聚类
-        self.contour_step = 0.002 # 轮廓近似精度，越小越精确，单位是像素长度的比例
+        self.contour_step = 0.001 # 轮廓近似精度，越小越精确，单位是像素长度的比例
 
         self.index = index
         self.output = output
@@ -166,10 +166,14 @@ class CEPBProcessor:
         )
         # 取背景色（大概率可以省却掉，因为背景色都是白色。而且，因为聚类发生在量化后的图形中，所以取色也应该在量化后的图形中
         corners = np.array([quantized[0, 0, :3], quantized[0, self.w - 1, :3], quantized[self.h - 1, 0, :3], quantized[self.h - 1, self.w - 1, :3]])
-        bg_color = np.mean(corners, axis=0).astype(np.uint8) # 取四个角的平均值作为背景色
+        bg_black = np.mean(corners, axis=0).astype(np.uint8) # 取四个角的平均值作为背景色
 
-        centers = [bg_color] # 先把背景色加入到聚类中心列表中
-        labels = ['__background__']
+        # 取白色盒子色
+        white_box = (255//self.step) * self.step
+        bg_white = np.array([white_box, white_box, white_box], dtype=np.uint8)
+
+        centers = [bg_black, bg_white] # 先把背景色加入到聚类中心列表中
+        labels = ['__background__', '__white_box__']
 
         # 取每个物体的质心色,因为聚类发生在量化后的图形中，所以取色也应该在量化后的图形中,虽然大概率不会取到过度色，但是还是更加合理一些
         for obj in view.gt.objects:
@@ -183,7 +187,7 @@ class CEPBProcessor:
         logger.debug(f"聚类中心颜色: {centers}\n聚类中心标签: {labels}")
 
         # 进行k-means聚类
-        K = len(centers) # 聚类中心数量
+        K = len(centers) # 聚类中心数量(还有盒子本身的颜色，等待修改)
         kmeans = KMeans(n_clusters=K, init=np.array(centers), n_init=1, random_state=42) # n_init=1表示只进行一次初始化，random_state=0表示随机种子固定
         kmeans.fit(colors) # 训练模型，输入是二维数组，每一行是一个像素的rgb值
         logger.debug(f"聚类结果: {kmeans.labels_}")
@@ -194,7 +198,7 @@ class CEPBProcessor:
         # 构建label_map, label_map的每个像素值是对应的标签索引
         label_map = {i:labels[i] for i in range(K)}
 
-        self._debug_visualize(cluster_map, label_map, view_name=f"scene_{view.index}_view_{view.view_point}")
+        self._debug_visualize(cluster_map, label_map, quantized_img=quantized, view_name=f"scene_{view.index}_view_{view.view_point}")
 
         return cluster_map, label_map
 
@@ -204,6 +208,9 @@ class CEPBProcessor:
         outlines = {} # 不考虑背景轮廓
         for idx, label in label_map.items():
             if label == '__background__':
+                continue
+            if label == '__white_box__':
+                logger.debug(f"物体 {label} 是白色盒子，已忽略该物体。")
                 continue
             mask = (cluster_map == idx).astype(np.uint8) * 255
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -285,38 +292,80 @@ class CEPBProcessor:
             self.save_files(outlines, view, label_map)
 
 
-    def _debug_visualize(self, cluster_map, label_map, view_name="scene"):
+    def _debug_visualize(self, cluster_map, label_map, quantized_img, view_name="scene"):
         """
-        为了方便调试，展示聚类结果
+        调试可视化：左图 = 量化后图像，右图 = 聚类结果（固定颜色 + 类名标注）。
+        不弹窗、不渲染 GUI 框，直接保存 PNG 到磁盘。
         """
 
-        # 保证只有DEBUG模式下才会执行
-        if logger._core.min_level > 10:  # 10是DEBUG级别
+        if logger._core.min_level > 10:          # 只有 DEBUG 模式才执行
             return
+
+        from matplotlib.colors import ListedColormap
 
         K = cluster_map.max() + 1
         logger.debug(f"渲染调试可视化，视角：{view_name}，类别数：{K}")
 
-        # 1. 创建图像  
-        fig, ax = plt.subplots(figsize=(12, 8))
+        # ================================================================
+        # 固定颜色表 —— 每种物体一个专属颜色，跨场景不变，方便肉眼对比
+        # 颜色值域 [0, 1]，分别对应 (R, G, B)
+        # ================================================================
+        FIXED_COLORS = {
+            '__background__':  (1.0, 1.0, 1.0),   # 白色 — 背景
+            '__white_box__':   (1.0, 1.0, 1.0),   # 白色 — 白色盒子
+            'Cheez-it':        (0.89, 0.10, 0.11),   # 红   — 芝士饼干
+            'Starkist_Tuna':   (0.22, 0.49, 0.72),   # 蓝   — 金枪鱼罐头
+            'Scissors':        (0.30, 0.69, 0.29),   # 绿   — 剪刀
+            'Frenchs_Mustard': (1.00, 0.80, 0.00),   # 金黄 — 芥末酱
+            'Tomato_Soup':     (0.90, 0.40, 0.00),   # 橙   — 番茄汤
+            'Foam_Brick':      (0.55, 0.24, 0.60),   # 紫   — 泡沫砖
+            'Clamp':           (0.00, 0.75, 0.75),   # 青   — C 型夹
+            'Plastic_Banana':  (0.96, 0.87, 0.30),   # 淡黄 — 塑料香蕉
+            'Mug':             (0.50, 0.50, 0.55),   # 灰蓝 — 马克杯
+            'meat_can':        (0.93, 0.28, 0.51),   # 粉红 — 肉罐头
+        }
+        UNKNOWN = (1.0, 1.0, 1.0)                   # 白色 — 未知（异常信号）
 
-        # 使用 tab20 保证每个类颜色差异最大化
-        cmap = plt.cm.tab20
-        im = ax.imshow(cluster_map, cmap=cmap, vmin=0, vmax=K-1, interpolation='nearest')
-        ax.set_title(f"Clustering Result - {view_name} (K={K})")
-        ax.axis('off')
+        # ================================================================
+        # 按 cluster_id 顺序构建 ListedColormap
+        # label_map = {0: '__background__', 1: 'Cheez-it', 2: 'Clamp', ...}
+        # ================================================================
+        color_list = [FIXED_COLORS.get(label_map.get(i, ''), UNKNOWN)
+                    for i in range(K)]
+        cmap = ListedColormap(color_list, name='CEPB_fixed')
 
-        # 2. 添加颜色条，并直接显示类名
-        cbar = plt.colorbar(im, ax=ax, ticks=range(K), label='Class Label')
-        # 直接从 label_map 中按顺序取出类名
-        tick_labels = [label_map[i] for i in range(K)]
+        # ================================================================
+        # 画布：1 行 2 列
+        # ================================================================
+        fig, axes = plt.subplots(1, 2, figsize=(22, 9))
+
+        # ---- 左：量化图像 ----
+        ax0 = axes[0]
+        ax0.imshow(quantized_img)
+        ax0.set_title(f"quantized_img  step={self.step}  |  {view_name}",
+                    fontsize=12, fontweight='bold')
+        ax0.axis('off')
+
+        # ---- 右：聚类结果 ----
+        ax1 = axes[1]
+        im = ax1.imshow(cluster_map, cmap=cmap, vmin=0, vmax=K - 1,
+                        interpolation='nearest')
+        ax1.set_title(f"K-Means_images  K={K}  |  {view_name}",
+                    fontsize=12, fontweight='bold')
+        ax1.axis('off')
+
+        # ---- 颜色条：显示 cluster_id + 类名 + 备注 ----
+        cbar = plt.colorbar(im, ax=ax1, ticks=range(K), fraction=0.046)
+        tick_labels = [f"{i}: {label_map.get(i, '?')}" for i in range(K)]
         cbar.set_ticklabels(tick_labels)
+        cbar.ax.tick_params(labelsize=7)
 
-        # 3. 保存到磁盘（无 GUI 环境也能事后查看）
+        # ---- 保存到磁盘，关闭画布释放内存 ----
         debug_dir = os.path.join(self.output.root, 'debug_vis')
         os.makedirs(debug_dir, exist_ok=True)
         save_path = os.path.join(debug_dir, f"{view_name}_cluster.png")
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)                              # 不弹窗，不占内存
         logger.debug(f"调试图像已保存至：{save_path}")
 
 

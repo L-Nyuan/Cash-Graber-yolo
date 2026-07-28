@@ -1,4 +1,5 @@
 *.pt
+*.png
 test_output/
 dataset/
 dataset_temp/
