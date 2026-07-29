@@ -180,7 +180,7 @@ class CEPBProcessor:
             if obj.visibility < self.vis:
                 continue
             # 取出质心的颜色
-            color = quantized[int(obj.cx), int(obj.cy)]
+            color = quantized[int(obj.cy), int(obj.cx)]
             centers.append(color)
             labels.append(obj.class_name)
 
