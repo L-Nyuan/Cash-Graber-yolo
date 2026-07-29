@@ -1,7 +1,9 @@
 *.pt
 *.png
+*.log
 test_output/
 dataset/
 dataset_temp/
-/.vscode/
-/scripts/logs/
+.vscode/
+scripts/logs/
+logs/

@@ -134,7 +134,7 @@ class CEPBProcessor:
         self.h = 1536 # 图像高度
         self.w = 2048 # 图像宽度
         self.vis = 0.2 # 可见度阈值，低于该阈值的物体不参与聚类
-        self.contour_step = 0.001 # 轮廓近似精度，越小越精确，单位是像素长度的比例
+        self.contour_step = 0.001 # 轮廓近似度，越小越精确，单位是像素长度的比例
 
         self.index = index
         self.output = output
@@ -180,7 +180,7 @@ class CEPBProcessor:
             if obj.visibility < self.vis:
                 continue
             # 取出质心的颜色
-            color = quantized[int(obj.cy), int(obj.cx)]
+            color = quantized[int(obj.cx), int(obj.cy)]
             centers.append(color)
             labels.append(obj.class_name)
 
