@@ -4,6 +4,9 @@ import yaml
 import os
 import re
 import cv2
+import sys
+import time
+from multiprocessing import Pool
 from loguru import logger
 from PIL import Image
 from dataclasses import dataclass, field
@@ -123,6 +126,19 @@ class CEPBProcessor:
         'Foam_Brick', 'Clamp', 'Plastic_Banana', 'Mug', 'meat_can',
     ])
 
+    CANONICAL_COLORS: dict[str, tuple[int, int, int]] = {
+    'meat_can':        (0, 0, 255),
+    'Mug':             (0, 224, 0),
+    'Plastic_Banana':  (224, 0, 0),
+    'Clamp':           (0, 224, 96),
+    'Foam_Brick':      (96, 0, 224),
+    'Tomato_Soup':     (224, 96, 0),
+    'Frenchs_Mustard': (96, 224, 224),
+    'Scissors':        (224, 96, 224),
+    'Starkist_Tuna':   (224, 224, 96),
+    'Cheez-it':        (178, 178, 178),
+    }
+
 
     def __init__(self, index: int, input_dir: str, output:OutputPath):
         """
@@ -146,8 +162,6 @@ class CEPBProcessor:
         self.right_view = ViewPoint(index=index, root=input_dir, view_point=2)
 
 
-
-
     def seg_to_cluster(self, view: ViewPoint)-> tuple[NDArray, dict]:
         """
         读取seg图像并作像素量化和聚类
@@ -158,12 +172,29 @@ class CEPBProcessor:
         # 进行像素量化/感觉叫离散化更合适一点
         quantized = (rgb // self.step) * self.step
 
+        # # 先对颜色去重，减少计算量
+        # colors, inverse = np.unique(
+        #     quantized.reshape(-1, 3),       # 展开成二维数组，具体展开方式没看。每一行都是一个rgb组合
+        #     axis=0,                         # 按照行去重，一模一样的行就只保留一个
+        #     return_inverse=True             # 压缩索引，表示原来的每个像素在去重后的数组中的索引位置，quantized.reshape(-1, 3)[i] == colors[inverse[i]]
+        # )
+
         # 先对颜色去重，减少计算量
-        colors, inverse = np.unique(
-            quantized.reshape(-1, 3),       # 展开成二维数组，具体展开方式没看。每一行都是一个rgb组合
-            axis=0,                         # 按照行去重，一模一样的行就只保留一个
-            return_inverse=True             # 压缩索引，表示原来的每个像素在去重后的数组中的索引位置，quantized.reshape(-1, 3)[i] == colors[inverse[i]]
+        # 将 (H,W,3) 的 RGB 打包成单个 int32: R*65536 + G*256 + B
+        # 1D unique 比 2D unique(axis=0) 快 5~10 倍
+        packed = (
+            quantized[:, :, 0].astype(np.int32) * 65536 +
+            quantized[:, :, 1].astype(np.int32) * 256 +
+            quantized[:, :, 2].astype(np.int32)
         )
+        unique_packed, inverse = np.unique(packed, return_inverse=True)
+        # 解包回 (N, 3)
+        colors = np.stack([
+            ((unique_packed // 65536) % 256).astype(np.uint8),
+            ((unique_packed // 256) % 256).astype(np.uint8),
+            (unique_packed % 256).astype(np.uint8),
+        ], axis=1)
+
         # 取背景色（大概率可以省却掉，因为背景色都是白色。而且，因为聚类发生在量化后的图形中，所以取色也应该在量化后的图形中
         corners = np.array([quantized[0, 0, :3], quantized[0, self.w - 1, :3], quantized[self.h - 1, 0, :3], quantized[self.h - 1, self.w - 1, :3]])
         bg_black = np.mean(corners, axis=0).astype(np.uint8) # 取四个角的平均值作为背景色
@@ -179,10 +210,11 @@ class CEPBProcessor:
         for obj in view.gt.objects:
             if obj.visibility < self.vis:
                 continue
-            # 取出质心的颜色
-            color = quantized[int(obj.cy), int(obj.cx)]
-            centers.append(color)
-            labels.append(obj.class_name)
+            if obj.class_name in self.CANONICAL_COLORS:
+                raw = np.array(self.CANONICAL_COLORS[obj.class_name], dtype=np.uint8)
+                q_color = (raw // self.step) * self.step   # 量化以匹配 quantized 图像
+                centers.append(q_color)
+                labels.append(obj.class_name)       
 
         logger.debug(f"聚类中心颜色: {centers}\n聚类中心标签: {labels}")
 
@@ -371,9 +403,12 @@ class CEPBProcessor:
 
 def main():
     # 设置日志记录器
-    logger.add("logs/Seg_To_Txt_{time}.log", rotation="10 MB", level="DEBUG", format="{time:YYYY-MM-DD at HH:mm:ss} | {level} | {message}")
-    test = CEPBProcessor(index=1, input_dir="/root/dataset/", output=OutputPath(root="/root/yolo/test_output"))
-    test.process()
+    logger.remove()  # 移除默认的日志处理器
+    logger.add("logs/Seg_To_Txt_{time}.log", rotation="10 MB", level="INFO", format="{time:YYYY-MM-DD at HH:mm:ss} | {level} | {message}")
+    for index in range(1, 5000):  # 假设有10个数据集
+        test = CEPBProcessor(index=index, input_dir="/root/dataset/", output=OutputPath(root="/root/dataset_seg/"))
+        test.process()
+        print(f"Scene {test.index} 处理完成！")
     return 0
 
 if __name__ == "__main__":
