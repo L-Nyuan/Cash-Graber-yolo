@@ -6,6 +6,7 @@ import re
 import cv2
 import sys
 import time
+from tqdm import tqdm
 from multiprocessing import Pool
 from loguru import logger
 from PIL import Image
@@ -400,15 +401,55 @@ class CEPBProcessor:
         plt.close(fig)                              # 不弹窗，不占内存
         logger.debug(f"调试图像已保存至：{save_path}")
 
+def _process_one(args):
+    """
+    处理单个场景的函数，供Pool.map调用
+    """
+    index, input_dir, output = args
+    try:
+        processor = CEPBProcessor(index=index, input_dir=input_dir, output=output)
+        processor.process()
+        logger.info(f"Scene {index} 处理完成！")
+        return (index, True, None)
+    except Exception as e:
+        logger.error(f"Scene {index} 处理失败: {e}")
+        return (index, False, str(e))
 
 def main():
     # 设置日志记录器
     logger.remove()  # 移除默认的日志处理器
     logger.add("logs/Seg_To_Txt_{time}.log", rotation="10 MB", level="INFO", format="{time:YYYY-MM-DD at HH:mm:ss} | {level} | {message}")
-    for index in range(1, 5000):  # 假设有10个数据集
-        test = CEPBProcessor(index=index, input_dir="/root/dataset/", output=OutputPath(root="/root/dataset_seg/"))
-        test.process()
-        print(f"Scene {test.index} 处理完成！")
+
+    input_dir = "/root/dataset/"
+    output = OutputPath(root="/root/dataset_seg/")
+
+    n_total = 5000  # 一共有5000个数据
+    n_workers = min(18, os.cpu_count() or 10) # 使用的进程数，最多18个，不超过CPU核心数量
+
+    tasks = [(i, input_dir, output) for i in range(1, n_total + 1)]
+
+    success = 0
+    fail = 0
+    t_start = time.time()
+
+    logger.info(f"开始处理 {n_total} 个场景，使用 {n_workers} 个进程...")
+
+    with Pool(processes=n_workers) as pool:
+        with tqdm(total=len(tasks), desc="Processing scenes") as pbar:
+            for idx, ok, err in pool.imap_unordered(_process_one, tasks):
+                if ok:
+                    success += 1
+                else:
+                    fail += 1
+                    logger.error(f"Scene {idx} 失败: {err}")
+                pbar.set_postfix({"success": success, "fail": fail})
+                pbar.update(1)
+
+    elapsed = time.time() - t_start
+    logger.info(
+        f"全部完成: 成功 {success}, 失败 {fail}, "
+        f"耗时 {elapsed:.0f}s ({elapsed/n_total:.1f}s/张)"
+    )    
     return 0
 
 if __name__ == "__main__":
