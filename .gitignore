@@ -6,3 +6,4 @@ dataset_temp/
 .vscode/
 scripts/logs/
 logs/
+__pycache__/
