@@ -15,6 +15,7 @@ SEED = 42               # 随机种子，固定可复现
 # 匹配: {id}_view_{0|1|2}_{dir|point|spot}.jpg
 PATTERN = re.compile(r"^(.+_view_\d+)_(dir|point|spot)\.jpg$")
 
+
 random.seed(SEED)
 
 for target_dir in TARGET_DIRS:
