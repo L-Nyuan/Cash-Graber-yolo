@@ -1,5 +1,6 @@
 # yolo_inference.py —— YOLO11-seg 推理封装
 import time
+import cv2
 import numpy as np
 from ultralytics import YOLO
 
@@ -11,8 +12,8 @@ class YOLOSegInference:
         self,
         model_path: str = "/root/yolo/result/exp_2/last.pt",     # 模型权重路径
         imgsz: int = 640,                       # 输入图像尺寸
-        conf: float = 0.6,                      # 置信度阈值
-        iou: float = 0.7,                       # 非极大抑制 IoU 阈值
+        conf: float = 0.5,                      # 置信度阈值
+        iou: float = 0.4,                       # 非极大抑制 IoU 阈值
         device: str = "cuda",
     ):
         self.model = YOLO(model_path)
@@ -39,6 +40,18 @@ class YOLOSegInference:
              "inference_time_ms": float}
             mask 是 (H, W) bool，原图尺寸
         """
+
+        # # 用来检查输入的图像是否正确，曾出现过回调函数rgb通道错误的问题
+        # cv2.imwrite(
+        # '/root/yolo/rgb_test/test_ros.png',
+        # image)
+
+        # # 添加转换步骤  该步骤已补充到 ros_image_to_numpy() 函数中
+        # image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        # cv2.imwrite(
+        # '/root/yolo/rgb_test/test_ros_turn.png',
+        # image)
+
         t0 = time.perf_counter()
 
         results = self.model(

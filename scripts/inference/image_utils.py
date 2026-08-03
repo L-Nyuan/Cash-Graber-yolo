@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 from sensor_msgs.msg import Image
 
@@ -22,7 +23,7 @@ def ros_image_to_numpy(msg: Image) -> np.ndarray:
     Args:
         msg: sensor_msgs/Image 消息
     Returns:
-        shape (H, W) 或 (H, W, C) 的 numpy 数组
+        shape (H, W) 或 (H, W, C) 的 numpy 数组 BGR格式，与yolo保持一致
     """
     if msg.encoding not in _ENCODING_MAP:
         raise ValueError(
@@ -35,5 +36,14 @@ def ros_image_to_numpy(msg: Image) -> np.ndarray:
 
     if channels == 1:
         return data.reshape((msg.height, msg.width))
+
+    image = data.reshape((msg.height, msg.width, channels))
+
+    # 转换为 BGR 顺序
+    if msg.encoding == "rgb8":
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    elif msg.encoding == "bgr8":
+        pass  # 已经是 BGR
     else:
-        return data.reshape((msg.height, msg.width, channels))
+        raise ValueError(f"不支持的 encoding: {msg.encoding}")
+    return image

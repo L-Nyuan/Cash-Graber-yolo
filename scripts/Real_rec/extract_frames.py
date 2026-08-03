@@ -127,7 +127,7 @@ def process(video_path, args):
 def main():
     p = argparse.ArgumentParser(description="从视频中按间隔抽帧")
     p.add_argument("-i", "--input", required=True, help="视频文件或目录")
-    p.add_argument("-o", "--output", default=None, help="输出目录")
+    p.add_argument("-o", "--output", default="/root/yolo/dataset_real", help="输出目录")
     p.add_argument("-t", "--interval", type=float, default=1.0, help="秒间隔，默认1")
     p.add_argument("-s", "--step", type=int, default=None, help="帧间隔（覆盖-t）")
     p.add_argument("-m", "--max", type=int, default=None, help="最多抽取张数")

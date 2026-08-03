@@ -17,6 +17,7 @@ import time
 import os
 import numpy as np
 import rclpy
+import cv2
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, CameraInfo
@@ -97,6 +98,12 @@ class YOLOInferenceNode(Node):
             return
         self._latest_color = None
         self._frame_count += 1
+
+        # 查看rgb图像是否正确
+        cv2.imwrite(
+        "/root/yolo/rgb_test/test_ros.png",
+        image
+        )
 
         t0 = time.perf_counter()
         result = self.yolo.predict(image)

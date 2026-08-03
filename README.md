@@ -26,7 +26,7 @@ from visualization_utils import save_debug_image
 
 yolo = YOLOSegInference('/root/yolo/result/exp_2/last.pt')
 
-img_bgr = cv2.imread('/root/yolo/test_output/images/1_view_0_dir.jpg')
+img_bgr = cv2.imread('/root/dataset_yolo/images/val/4505_view_0_dir.jpg')
 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 print(f'图像尺寸: {img_rgb.shape}')
 
