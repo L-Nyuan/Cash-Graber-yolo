@@ -9,9 +9,9 @@ class YOLOSegInference:
 
     def __init__(
         self,
-        model_path: str = "/root/yolo/result/exp_1/best.pt",     # 模型权重路径
+        model_path: str = "/root/yolo/result/exp_2/last.pt",     # 模型权重路径
         imgsz: int = 640,                       # 输入图像尺寸
-        conf: float = 0.8,                      # 置信度阈值
+        conf: float = 0.6,                      # 置信度阈值
         iou: float = 0.7,                       # 非极大抑制 IoU 阈值
         device: str = "cuda",
     ):

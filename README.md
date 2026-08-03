@@ -17,3 +17,24 @@
 
 
 官方数据集中有很多多余的深度图像，删掉就行了
+
+python -c "
+import cv2, sys
+sys.path.insert(0, '/root/yolo/scripts/inference')
+from yolo_inference import YOLOSegInference
+from visualization_utils import save_debug_image
+
+yolo = YOLOSegInference('/root/yolo/result/exp_2/last.pt')
+
+img_bgr = cv2.imread('/root/yolo/test_output/images/1_view_0_dir.jpg')
+img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+print(f'图像尺寸: {img_rgb.shape}')
+
+r = yolo.predict(img_rgb)
+print(f\"推理 {r['inference_time_ms']:.1f}ms, 检测到 {len(r['objects'])} 个物体\")
+for o in r['objects']:
+    print(f\"  {o['class_name']:20s} conf={o['confidence']:.2f}  pixels={o['mask'].sum()}\")
+
+save_debug_image(img_rgb, r['objects'], '/root/yolo/debug_test.jpg')
+print('可视化已保存: /root/yolo/debug_test.jpg')
+"
