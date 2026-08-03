@@ -26,7 +26,7 @@ from visualization_utils import save_debug_image
 
 yolo = YOLOSegInference('/root/yolo/result/exp_2/last.pt')
 
-img_bgr = cv2.imread('/root/dataset_yolo/images/val/4505_view_0_dir.jpg')
+img_bgr = cv2.imread('/root/dataset_yolo/images/val/4501_view_0_dir.jpg')
 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 print(f'图像尺寸: {img_rgb.shape}')
 
@@ -35,6 +35,6 @@ print(f\"推理 {r['inference_time_ms']:.1f}ms, 检测到 {len(r['objects'])} �
 for o in r['objects']:
     print(f\"  {o['class_name']:20s} conf={o['confidence']:.2f}  pixels={o['mask'].sum()}\")
 
-save_debug_image(img_rgb, r['objects'], '/root/yolo/debug_test.jpg')
+save_debug_image(img_rgb, r['objects'], '/root/yolo/debug_test4501.jpg')
 print('可视化已保存: /root/yolo/debug_test.jpg')
 "

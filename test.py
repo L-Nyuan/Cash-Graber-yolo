@@ -5,7 +5,7 @@ model=YOLO(
 )
 
 result=model.predict(
-"/root/dataset_yolo/images/val/4501_view_0_dir.jpg",
+"/root/yolo/dataset_real/01/frame_000600.jpg",
 imgsz=640,
 conf=0.25,
 save=True,
