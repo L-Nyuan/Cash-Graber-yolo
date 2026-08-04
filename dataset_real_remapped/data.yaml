@@ -1,0 +1,16 @@
+path: /root/yolo/dataset_real_remapped
+train: images/train
+val: images/val
+
+nc: 10
+names:
+    0: Cheez-it
+    1: Starkist_Tuna
+    2: Scissors
+    3: Frenchs_Mustard
+    4: Tomato_Soup
+    5: Foam_Brick
+    6: Clamp
+    7: Plastic_Banana
+    8: Mug
+    9: meat_can

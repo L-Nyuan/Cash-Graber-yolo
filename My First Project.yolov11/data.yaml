@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 9
+names: ['Cheez-it', 'Clamp', 'Foam_Brick', 'Frenchs_Mustard', 'Mug', 'Plastic_Banana', 'Starkist_Tuna', 'Tomato_Soup', 'meat_can']
+
+roboflow:
+  workspace: rugh-pribbenow
+  project: my-first-project-iund0
+  version: dataset
+  license: Private
+  url: https://app.roboflow.com/rugh-pribbenow/my-first-project-iund0/dataset

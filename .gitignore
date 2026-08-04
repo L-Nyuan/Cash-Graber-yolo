@@ -7,3 +7,5 @@ dataset_temp/
 scripts/logs/
 logs/
 __pycache__/
+*.mp4
+*.jpg

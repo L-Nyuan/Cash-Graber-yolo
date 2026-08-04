@@ -43,8 +43,11 @@ CLASS_COLORS_RGB = {
     9:  (237,  71, 130),   # 粉红   — meat_can
 }
 
-IMG_W = 2048   # CEPB 图像宽度
-IMG_H = 1536   # CEPB 图像高度
+# IMG_W = 2048   # CEPB 图像宽度
+# IMG_H = 1536   # CEPB 图像高度
+
+IMG_W = 640
+IMG_H = 480
 
 
 def load_label(txt_path: str) -> list[tuple[int, np.ndarray]]:
