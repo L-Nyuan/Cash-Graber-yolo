@@ -24,9 +24,9 @@ sys.path.insert(0, '/root/yolo/scripts/inference')
 from yolo_inference import YOLOSegInference
 from visualization_utils import save_debug_image
 
-yolo = YOLOSegInference('/root/yolo/result/exp_2/last.pt')
+yolo = YOLOSegInference('/root/yolo/result/final/last.pt')
 
-img_bgr = cv2.imread('/root/dataset_yolo/images/val/4501_view_0_dir.jpg')
+img_bgr = cv2.imread('/root/ros2_ws/dataset_real/images/val/37_010_jpg.rf.NiwQfaRabHYHhxKNzA3m.jpg')
 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 print(f'图像尺寸: {img_rgb.shape}')
 
