@@ -34,7 +34,7 @@ class YOLOInferenceNode(Node):
         super().__init__("yolo_inference_node")
 
         # ── 可配置参数 ──────────────────────────────────────────
-        self.declare_parameter("model_path", "/root/yolo/result/exp_1/best.pt")
+        self.declare_parameter("model_path", "/root/yolo/result/exp_3/last.pt")
         self.declare_parameter("imgsz", 640)
         self.declare_parameter("conf", 0.8)
         self.declare_parameter("iou", 0.7)
