@@ -20,7 +20,9 @@ import rclpy
 import cv2
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image, CameraInfo, Header, PointCloud2, PointField
+from sensor_msgs.msg import Image, CameraInfo, PointCloud2
+from std_msgs.msg import Header
+from visualization_msgs.msg import MarkerArray
 
 from image_utils import ros_image_to_numpy
 from yolo_inference import YOLOSegInference
@@ -63,6 +65,7 @@ class YOLOInferenceNode(Node):
 
         # 发布
         self.obj_cloud_pub = self.create_publisher(PointCloud2, "/yolo/object_cloud", qos_pc)
+        self.marker_pub = self.create_publisher(MarkerArray, "/yolo/markers", qos_pc)
         # 订阅
         self.color_sub = self.create_subscription(
             Image, "/Wrist_Camera/d435i/color/image_raw", self._color_cb, qos)
@@ -94,7 +97,7 @@ class YOLOInferenceNode(Node):
 
     def _color_cb(self, msg: Image):
         try:
-            self._latest_color = ros_image_to_numpy(msg)
+            self._latest_color, _ = ros_image_to_numpy(msg)
         except Exception as e:
             self.get_logger().error(f"解码失败: {e}")
 
@@ -156,15 +159,15 @@ class YOLOInferenceNode(Node):
 
         # 发布
         now = self.get_clock().now().to_msg()
-        header = Header(stamp=now, frame_id="Wrist_Camera_color_optical_frame")
+        header = Header(stamp=now, frame_id="d435i_color_optical_frame")
 
         if all_pointclouds:
             combined = np.vstack(all_pointclouds)
-            pc2_msg = _build_pointcloud2(combined, header)
+            pc2_msg = _build_pointcloud2(self, combined, header)
             self.obj_cloud_pub.publish(pc2_msg)
 
         # 可视化Maker
-        _publish_markers(result["objects"], header)
+        _publish_markers(result["objects"], header, publisher=self.marker_pub)
 
 
         total_ms = (time.perf_counter() - t0) * 1000

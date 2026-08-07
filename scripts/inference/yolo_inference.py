@@ -50,7 +50,7 @@ class YOLOSegInference:
         # image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         # cv2.imwrite(
         # '/root/yolo/rgb_test/test_ros_turn.png',
-        # image)
+        # image) 
 
         t0 = time.perf_counter()
 

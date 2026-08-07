@@ -1,7 +1,7 @@
 from visualization_msgs.msg import Marker, MarkerArray
 import numpy as np
 
-def _publish_markers(self, objects, header):
+def _publish_markers(objects, header, publisher):
     """为每个检测物体发一个 3D 包围框 marker。"""
     markers = MarkerArray()
     colors = [(1,0,0),(0,1,0),(0,0,1),(1,1,0),(1,0,1),
@@ -60,4 +60,4 @@ def _publish_markers(self, objects, header):
         markers.markers.append(marker)
         markers.markers.append(marker_text)
 
-    self.marker_pub.publish(markers)
+    publisher.publish(markers)

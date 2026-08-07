@@ -36,7 +36,7 @@ def ros_image_to_numpy(msg: Image, scale: float = 0.001):
     data = np.frombuffer(msg.data, dtype=dtype)# 按照数据格式直接读缓存区内存，零拷贝赋值
 
     if channels == 1:
-        return data.reshape((msg.height, msg.width))
+        return data.reshape((msg.height, msg.width)), scale
 
     image = data.reshape((msg.height, msg.width, channels))
 
