@@ -4,8 +4,10 @@ import numpy as np
 def _publish_markers(objects, header, publisher):
     """为每个检测物体发一个 3D 包围框 marker。"""
     markers = MarkerArray()
-    colors = [(1,0,0),(0,1,0),(0,0,1),(1,1,0),(1,0,1),
-              (0,1,1),(1,0.5,0),(0.5,0,1),(0,1,0.5)]
+
+    colors = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
+            (1.0, 1.0, 0.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0),
+            (1.0, 0.5, 0.0), (0.5, 0.0, 1.0), (0.0, 1.0, 0.5)]
 
     for i, obj in enumerate(objects):
         if "cloud" not in obj:

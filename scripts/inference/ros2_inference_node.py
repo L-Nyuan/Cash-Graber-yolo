@@ -146,6 +146,7 @@ class YOLOInferenceNode(Node):
             mask = obj["mask"]
             if depth is not None and camera_info is not None:
                 pointcloud = self._mask_to_pointcloud(mask, depth, camera_info, scale=self._depth_scale)
+                obj["cloud"] = pointcloud
                 all_pointclouds.append(pointcloud)
                 self.get_logger().info(
                     f"  [{i}] {obj['class_name']} | "
