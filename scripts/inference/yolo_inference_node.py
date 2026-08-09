@@ -192,8 +192,10 @@ class YOLOInferenceNode(Node):
         self._cloud_lock = threading.Lock()
 
         # ── QoS ──────────────────────────────────────────
+        # 这给谁都不许改，否则会打断腿
         qos_sensor = QoSProfile(
-            depth=5, reliability=ReliabilityPolicy.BEST_EFFORT,
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE)
         qos_reliable = QoSProfile(
             depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -385,10 +387,10 @@ class YOLOInferenceNode(Node):
                 header = Header(stamp=now, frame_id=self._color_frame_id)
                 _publish_markers([obj for _, obj in tracked_objects],
                                  header, publisher=self.marker_pub)
-
-        if self._debug and _HAS_VIZ and objects:
-            save_debug_image(image, objects, os.path.join(
-                self._debug_dir, f"frame_{self._frame_count:06d}.png"))
+        # 没必要，还会降低帧率
+        # if self._debug and _HAS_VIZ and objects:
+        #     save_debug_image(image, objects, os.path.join(
+        #         self._debug_dir, f"frame_{self._frame_count:06d}.png"))
 
         # ── 日志 ─────────────────────────────────────
         total_ms = (time.perf_counter() - t0) * 1000
