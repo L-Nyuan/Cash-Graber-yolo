@@ -74,6 +74,7 @@ class YOLOSegInference:
 
             classes = result.boxes.cls.cpu().numpy().astype(int)        # 取类别id
             confs = result.boxes.conf.cpu().numpy()                     # 取置信度
+            boxes = result.boxes.xyxy.cpu().numpy()          # (N, 4) [x1, y1, x2, y2]
 
             for i in range(len(masks)):
                 objects.append({
@@ -81,6 +82,7 @@ class YOLOSegInference:
                     "class_id": classes[i],
                     "confidence": float(confs[i]),
                     "mask": masks[i],          # (H, W) bool
+                    "bbox": boxes[i].tolist(),
                 })
 
         return {"objects": objects, "inference_time_ms": elapsed}

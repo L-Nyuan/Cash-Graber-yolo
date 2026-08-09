@@ -42,7 +42,7 @@ class YOLOInferenceNode(Node):
         self.declare_parameter("imgsz", 640)
         self.declare_parameter("conf", 0.8)
         self.declare_parameter("iou", 0.7)
-        self.declare_parameter("debug", False)
+        self.declare_parameter("debug", True)
         self.declare_parameter("debug_dir", "/root/yolo/yolo_debug")
 
         self.yolo = YOLOSegInference(

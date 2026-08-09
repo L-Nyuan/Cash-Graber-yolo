@@ -38,3 +38,5 @@ for o in r['objects']:
 save_debug_image(img_rgb, r['objects'], '/root/yolo/debug_test4501.jpg')
 print('可视化已保存: /root/yolo/debug_test.jpg')
 "
+
+python yolo_inference_node.py --ros-args -p mode:=debug

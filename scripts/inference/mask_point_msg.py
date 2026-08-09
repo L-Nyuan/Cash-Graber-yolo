@@ -8,7 +8,7 @@ def _build_pointcloud2(self, points, header, frame_id=""):
     Args:
         points:    np.ndarray (N,3) float32，[X, Y, Z] 米
         header:    std_msgs/Header，使用其 stamp
-        frame_id:  坐标系，如 "Wrist_Camera_color_optical_frame"
+        frame_id:  坐标系
 
     Returns:
         sensor_msgs/PointCloud2
