@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
 """
-YOLO11-seg ROS2 推理节点（正式版 · 零编译 · 带 RGB 点云）
-=========================================================
+YOLO11-seg ROS2 推理节点（RealSense 彩色点云直取版 ）
+============================================================
 
-纯标准消息类型，无需编译自定义接口，conda 环境直接用。
+前提（相机启动参数，必须与下面一致）：
+  ros2 launch realsense2_camera rs_launch.py \
+    pointcloud.enable:=true \
+    align_depth.enable:=true \
+    enable_color:=true \
+    enable_depth:=true \
+    rgb_camera.color_profile:=640x480x30 \
+    depth_module.depth_profile:=640x480x30 \
+    camera_name:=d435i \
+    camera_namespace:="Wrist_Camera"
 
-与上一版的区别：发布的 /yolo/object_cloud 包含 rgb 字段，
-GraspNet 等下游消费者可直接使用带颜色的点云。
-
-架构:
-  RealSense ─┬─ color/image_raw ─────→ YOLO 推理 + 点云着色
-             ├─ aligned_depth ────────→ mask → 点云投影
-             └─ color/camera_info ────→ 内参
-
-  YOLO Node ─┬─ /yolo/detections (String/JSON) ──→ 决策系统
-             ├─ /yolo/request_object_cloud (Int32) ← 决策系统请求
-             └─ /yolo/object_cloud (PointCloud2)  ──→ GraspNet
+  align_depth.enable:=true 是关键：
+  深度对齐到彩色 → 点云坐标系 = 彩色光轴系 = color/camera_info 内参坐标系，
+  3D 点投影回彩色图像素无需任何坐标变换，一一对应。
 
 话题:
   /yolo/detections              std_msgs/String  每帧检测元数据 (JSON)
-  /yolo/request_object_cloud    std_msgs/Int32   决策系统发布要抓的 track_id
-  /yolo/object_cloud            PointCloud2      对应物体的 3D 点云 (xyz+rgb)
+  /yolo/request_object_cloud    std_msgs/Int32   决策系统请求要抓的 track_id
+  /yolo/object_cloud            PointCloud2      对应物体的彩色点云 (xyz+rgb)
   /yolo/debug_cloud             PointCloud2      调试用，全部物体合并点云 (xyz+rgb)
   /yolo/markers                 MarkerArray      调试用 RViz 标记
 
 用法:
-  python yolo_inference_node_with_rgb.py --ros-args -p mode:=production
-  python yolo_inference_node_with_rgb.py --ros-args -p mode:=debug
+  python yolo_inference_node_rs_cloud.py --ros-args -p mode:=production
+  python yolo_inference_node_rs_cloud.py --ros-args -p mode:=debug \
+      -p publish_debug_cloud:=true
 """
 
 import json
@@ -47,7 +49,6 @@ from image_utils import ros_image_to_numpy
 from yolo_inference import YOLOSegInference
 from object_tracker import ObjectTracker
 
-# ── 可选导入 ──────────────────────────────────────────────
 try:
     from visualization_utils import save_debug_image
     _HAS_VIZ = True
@@ -64,6 +65,132 @@ except ImportError:
 # ============================================================
 # 工具函数
 # ============================================================
+
+def realsense_cloud_to_xyzrgb(msg: PointCloud2) -> Tuple[np.ndarray, np.ndarray]:
+    """解析 RealSense 彩色点云 → (N,3) xyz + (N,3) rgb [0-255]。
+
+    兼容三种字段布局：
+      1. rgb  字段（PCL 打包 float32：R<<16 | G<<8 | B）
+      2. rgba 字段（同 rgb，忽略 alpha）
+      3. 分离的 r/g/b 字段
+    无颜色字段时 rgb 返回全 0。
+
+    与 RViz 相同的解码约定：R = (packed >> 16) & 0xFF。
+    若发现 R/G 对调，把下方三行的通道顺序改一下即可。
+    """
+    n = msg.width * msg.height
+    if n == 0:
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.float32)
+
+    names = {f.name for f in msg.fields}
+
+    if "rgb" in names or "rgba" in names:
+        cname = "rgb" if "rgb" in names else "rgba"
+        dt = np.dtype([
+            ("x", np.float32), ("y", np.float32), ("z", np.float32),
+            (cname, np.float32),
+        ])
+        if msg.point_step == dt.itemsize:
+            # 紧排结构，直接结构化解析（最快）
+            arr = np.frombuffer(msg.data, dtype=dt)
+            xyz = np.stack([arr["x"], arr["y"], arr["z"]], axis=-1).astype(np.float32)
+            packed = arr[cname].view(np.uint32)
+            rgb = np.empty((n, 3), dtype=np.float32)
+            rgb[:, 0] = ((packed >> 16) & 0xFF).astype(np.float32)   # R
+            rgb[:, 1] = ((packed >> 8)  & 0xFF).astype(np.float32)   # G
+            rgb[:, 2] = ( packed        & 0xFF).astype(np.float32)   # B
+            return xyz, rgb
+        # 兜底：按 offset 逐字节解析
+        offs = {f.name: f.offset for f in msg.fields}
+        raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(n, msg.point_step)
+        xyz = np.zeros((n, 3), dtype=np.float32)
+        for i, nm in enumerate(["x", "y", "z"]):
+            seg = np.ascontiguousarray(raw[:, offs[nm]:offs[nm] + 4])
+            xyz[:, i] = np.frombuffer(seg.tobytes(), dtype=np.float32)
+        seg = np.ascontiguousarray(raw[:, offs[cname]:offs[cname] + 4])
+        packed = np.frombuffer(seg.tobytes(), dtype=np.float32).view(np.uint32)
+        rgb = np.empty((n, 3), dtype=np.float32)
+        rgb[:, 0] = ((packed >> 16) & 0xFF).astype(np.float32)
+        rgb[:, 1] = ((packed >> 8)  & 0xFF).astype(np.float32)
+        rgb[:, 2] = ( packed        & 0xFF).astype(np.float32)
+        return xyz, rgb
+
+    if {"r", "g", "b"}.issubset(names):
+        offs = {f.name: f.offset for f in msg.fields}
+        raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(n, msg.point_step)
+        xyz = np.zeros((n, 3), dtype=np.float32)
+        for i, nm in enumerate(["x", "y", "z"]):
+            seg = np.ascontiguousarray(raw[:, offs[nm]:offs[nm] + 4])
+            xyz[:, i] = np.frombuffer(seg.tobytes(), dtype=np.float32)
+        rgb = np.zeros((n, 3), dtype=np.float32)
+        for i, nm in enumerate(["r", "g", "b"]):
+            rgb[:, i] = raw[:, offs[nm]].astype(np.float32)
+        return xyz, rgb
+
+    # 无颜色：只解析 xyz
+    offs = {f.name: f.offset for f in msg.fields}
+    raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(n, msg.point_step)
+    xyz = np.zeros((n, 3), dtype=np.float32)
+    for i, nm in enumerate(["x", "y", "z"]):
+        seg = np.ascontiguousarray(raw[:, offs[nm]:offs[nm] + 4])
+        xyz[:, i] = np.frombuffer(seg.tobytes(), dtype=np.float32)
+    return xyz, np.zeros((n, 3), dtype=np.float32)
+
+
+def ensure_mask_resolution(mask: np.ndarray, target_hw: Tuple[int, int]) -> np.ndarray:
+    """把 mask 缩放到 (H, W) 目标分辨率（最近邻，保持边界）。
+
+    YOLO 返回的 mask 分辨率可能与彩色图不同（例如 160x160），
+    而 RealSense 点云反投影出的像素坐标是彩色图像素，必须对齐。
+    """
+    h, w = target_hw
+    mask = np.asarray(mask, dtype=bool)
+    if mask.shape == (h, w):
+        return mask
+    import cv2
+    m = mask.astype(np.uint8) * 255
+    m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+    return m > 0
+
+
+def crop_cloud_by_mask(xyz: np.ndarray, rgb: np.ndarray,
+                       mask: np.ndarray,
+                       camera_info: CameraInfo) -> np.ndarray:
+    """用 2D mask 裁剪 RealSense 彩色点云。
+
+    xyz: (M,3) float32 米（彩色光轴系）
+    rgb: (M,3) float32 [0-255]
+    mask: (H,W) bool —— 必须已缩放为彩色图分辨率（先 ensure_mask_resolution）
+    camera_info: 彩色相机内参
+
+    返回: (N,6) float32 [x, y, z, r, g, b]
+    """
+    if len(xyz) == 0:
+        return np.empty((0, 6), dtype=np.float32)
+
+    # 只保留有效点（RealSense 无效深度是 NaN）
+    valid = np.isfinite(xyz).all(axis=1) & (xyz[:, 2] > 0.01)
+    xyz = xyz[valid]
+    rgb = rgb[valid]
+    if len(xyz) == 0:
+        return np.empty((0, 6), dtype=np.float32)
+
+    fx, fy = camera_info.k[0], camera_info.k[4]
+    cx, cy = camera_info.k[2], camera_info.k[5]
+
+    # 3D 点反投影到彩色图像素（aligned 深度保证一一对应）
+    z = xyz[:, 2]
+    u = np.round(xyz[:, 0] * fx / z + cx).astype(np.int32)
+    v = np.round(xyz[:, 1] * fy / z + cy).astype(np.int32)
+
+    h, w = mask.shape
+    inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    keep = mask[v[inside], u[inside]]
+
+    idx = np.where(inside)[0][keep]
+    out = np.concatenate([xyz[idx], rgb[idx]], axis=-1)
+    return out.astype(np.float32)
+
 
 def build_pointcloud2(xyz_rgb: np.ndarray, header: Header) -> PointCloud2:
     """numpy (N,6) float32 [x,y,z,r,g,b] → sensor_msgs/PointCloud2。
@@ -88,11 +215,16 @@ def build_pointcloud2(xyz_rgb: np.ndarray, header: Header) -> PointCloud2:
         msg.data = b""
         return msg
 
-    # 打包 RGB: (R << 16) | (G << 8) | B，存为 float32（PCL 约定）
+    # 打包 RGB: (R << 16) | (G << 8) | B，按【位模式】重解释为 float32（PCL 约定）。
+    # 关键：必须 .astype(np.uint32).view(np.float32)——把 RGB 整数的位模式原样当
+    # float 存。绝不能 .astype(np.float32)：那是数值转换，位模式面目全非，
+    # 下游 view(np.uint32) 解回时颜色全错（白→(127,127,254)、黄→(127,255,192)）。
+    # 这正是之前"颜色错乱 + 相近色差异被放大 + 彩色噪声"的总根源。
     r = xyz_rgb[:, 3].astype(np.uint32)
     g = xyz_rgb[:, 4].astype(np.uint32)
     b = xyz_rgb[:, 5].astype(np.uint32)
-    rgb_packed = ((r << 16) | (g << 8) | b).astype(np.float32).view(np.float32)
+    rgb_int = (r << 16) | (g << 8) | b          # uint32，如黄色 0x00FFFF00
+    rgb_packed = rgb_int.astype(np.uint32).view(np.float32)
 
     dtype = np.dtype([
         ("x",   np.float32),
@@ -123,52 +255,6 @@ def build_pointcloud2(xyz_rgb: np.ndarray, header: Header) -> PointCloud2:
     return msg
 
 
-def mask_to_pointcloud(mask: np.ndarray, depth: np.ndarray,
-                       color_image: np.ndarray,
-                       camera_info: CameraInfo,
-                       scale: float = 0.001) -> np.ndarray:
-    """mask + 深度图 + 彩色图 + 内参 → 物体 3D 点云 (N,6) 米 + RGB。
-
-    返回: (N, 6) float32 数组，列依次为 [x, y, z, r, g, b]
-          r/g/b 范围 0-255
-
-    重要：color_image 必须已经是 RGB 顺序（调用方负责转换），
-          且 mask、depth、color_image 三者分辨率必须一致。
-    """
-    ys, xs = np.where(mask)
-    if len(ys) == 0:
-        return np.empty((0, 6), dtype=np.float32)
-
-    # 边界安全检查
-    h_img, w_img = color_image.shape[:2]
-    if ys.max() >= h_img or xs.max() >= w_img:
-        raise ValueError(
-            f"mask 坐标超出 color_image 范围: "
-            f"mask max=({ys.max()},{xs.max()}) color=({h_img},{w_img})")
-
-    Z = depth[ys, xs].astype(np.float32) * scale
-    valid = (Z > 0.05) & (Z < 3.0)
-    if not np.any(valid):
-        return np.empty((0, 6), dtype=np.float32)
-    ys, xs, Z = ys[valid], xs[valid], Z[valid]
-
-    # ── 反投影 xyz ──────────────────────────────────
-    fx, fy = camera_info.k[0], camera_info.k[4]
-    cx, cy = camera_info.k[2], camera_info.k[5]
-    X = (xs - cx) * Z / fx
-    Y = (ys - cy) * Z / fy
-    xyz = np.stack([X, Y, Z], axis=-1)
-
-    # ── 提取颜色（此时 color_image 已经保证是 RGB）───
-    if color_image.ndim == 3 and color_image.shape[2] >= 3:
-        color = color_image[ys, xs, :3].astype(np.float32)
-    else:
-        gray = color_image[ys, xs].astype(np.float32)
-        color = np.stack([gray, gray, gray], axis=-1)
-
-    return np.concatenate([xyz, color], axis=-1).astype(np.float32)
-
-
 def _get_bbox(obj: dict) -> np.ndarray:
     """从 YOLO 结果 dict 中提取 bbox [x1,y1,x2,y2]，兼容多种 key 名。
 
@@ -180,7 +266,6 @@ def _get_bbox(obj: dict) -> np.ndarray:
         return np.array(obj["box"], dtype=np.float32)
     if "xyxy" in obj:
         return np.array(obj["xyxy"], dtype=np.float32)
-    # 兜底：从 mask 算 bbox
     mask = obj.get("mask")
     if mask is not None and mask.any():
         ys, xs = np.where(mask)
@@ -199,12 +284,17 @@ def _box_iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
     return float(inter / union) if union > 0 else 0.0
 
 
+def _stamp_ns(s) -> int:
+    """ROS 时间戳 → 纳秒整数（时间对齐比较用）。"""
+    return int(s.sec) * 1_000_000_000 + int(s.nanosec)
+
+
 # ============================================================
 # 主节点
 # ============================================================
 
 class YOLOInferenceNode(Node):
-    """YOLO11-seg 推理 + IoU 追踪 + 按需彩色点云。零自定义接口依赖。"""
+    """YOLO11-seg 推理 + IoU 追踪 + RealSense 彩色点云裁剪。零自定义接口。"""
 
     def __init__(self):
         super().__init__("yolo_inference_node")
@@ -222,6 +312,15 @@ class YOLOInferenceNode(Node):
         self.declare_parameter("tracker_max_age", 30)
         self.declare_parameter("tracker_min_hits", 3)
         self.declare_parameter("tracker_iou_threshold", 0.3)
+
+        # ── 话题名（如需改命名空间可覆盖）────────────────
+        self.declare_parameter("cloud_topic", "/Wrist_Camera/d435i/depth/color/points")
+        self.declare_parameter("color_topic", "/Wrist_Camera/d435i/color/image_raw")
+        self.declare_parameter("info_topic", "/Wrist_Camera/d435i/color/camera_info")
+
+        self._cloud_topic = self.get_parameter("cloud_topic").value
+        self._color_topic = self.get_parameter("color_topic").value
+        self._info_topic = self.get_parameter("info_topic").value
 
         # ── YOLO 模型 ────────────────────────────────────
         self.yolo = YOLOSegInference(
@@ -251,24 +350,26 @@ class YOLOInferenceNode(Node):
         self._cloud_lock = threading.Lock()
 
         # ── QoS ──────────────────────────────────────────
-        # 这给谁都不许改，否则会打断腿
         qos_sensor = QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE)
+        # 点云用 BEST_EFFORT：reliable 发布方也能兼容，best_effort 发布方也可
+        qos_cloud = QoSProfile(
+            depth=5,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE)
         qos_reliable = QoSProfile(
             depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
         # ── 订阅 ─────────────────────────────────────────
         self.color_sub = self.create_subscription(
-            Image, "/Wrist_Camera/d435i/color/image_raw",
-            self._color_cb, qos_sensor)
+            Image, self._color_topic, self._color_cb, qos_sensor)
         self.info_sub = self.create_subscription(
-            CameraInfo, "/Wrist_Camera/d435i/color/camera_info",
-            self._info_cb, qos_sensor)
-        self.depth_sub = self.create_subscription(
-            Image, "/Wrist_Camera/d435i/aligned_depth_to_color/image_raw",
-            self._depth_cb, qos_sensor)
+            CameraInfo, self._info_topic, self._info_cb, qos_sensor)
+        # ★ 核心变化：直接订阅 RealSense 彩色点云，不再订阅深度图
+        self.cloud_sub = self.create_subscription(
+            PointCloud2, self._cloud_topic, self._cloud_cb, qos_cloud)
 
         # ── 发布 ─────────────────────────────────────────
         self.det_pub = self.create_publisher(
@@ -290,28 +391,30 @@ class YOLOInferenceNode(Node):
 
         # ── 状态 ─────────────────────────────────────────
         self._latest_color: Optional[np.ndarray] = None
-        self._latest_depth: Optional[np.ndarray] = None
-        self._depth_scale: float = 0.001
+        self._latest_color_stamp = None          # 最新彩色图时间戳（时间对齐用）
         self._latest_info: Optional[CameraInfo] = None
+        self._latest_cloud_xyz: Optional[np.ndarray] = None
+        self._latest_cloud_rgb: Optional[np.ndarray] = None
+        self._cloud_buffer: List = []            # [(stamp, xyz, rgb), ...] 时间对齐缓冲
+        self._cloud_msg_count = 0
         self._color_frame_id: str = "d435i_color_optical_frame"
 
         self._frame_count = 0
         self._total_inference_ms = 0.0
         self._color_msg_count = 0
-        self._depth_msg_count = 0
         self._color_encoding: str = ""
         self._shape_warned = False
+        self._last_debug_pub = 0.0          # 调试点云限频
 
         # ── 定时器 ───────────────────────────────────────
         self._timer = self.create_timer(0.05, self._inference_loop)
         self._status_timer = self.create_timer(5.0, self._print_status)
 
         self.get_logger().info(
-            f"YOLOInferenceNode 启动 | mode={self._mode} | "
+            f"YOLOInferenceNode(RealSense云) 启动 | mode={self._mode} | "
             f"model={self.get_parameter('model_path').value} | "
             f"imgsz={self.get_parameter('imgsz').value} | "
-            f"conf={self.get_parameter('conf').value} | "
-            f"零编译，纯标准消息类型 | 点云含 RGB"
+            f"点云来源: {self._cloud_topic}"
         )
 
     # ============================================================
@@ -325,6 +428,7 @@ class YOLOInferenceNode(Node):
             self._color_encoding = msg.encoding
             if "bgr" in msg.encoding.lower():        # 自动 BGR→RGB
                 arr = arr[:, :, ::-1]
+            self._latest_color_stamp = msg.header.stamp
             self._latest_color = arr
             self._color_msg_count += 1
         except Exception as e:
@@ -335,14 +439,19 @@ class YOLOInferenceNode(Node):
         if msg.header.frame_id:
             self._color_frame_id = msg.header.frame_id
 
-    def _depth_cb(self, msg: Image):
+    def _cloud_cb(self, msg: PointCloud2):
         try:
-            dep, scale = ros_image_to_numpy(msg)
-            self._latest_depth = dep.copy()
-            self._depth_scale = scale
-            self._depth_msg_count += 1
+            xyz, rgb = realsense_cloud_to_xyzrgb(msg)
+            self._latest_cloud_xyz = xyz
+            self._latest_cloud_rgb = rgb
+            self._cloud_buffer.append((msg.header.stamp, xyz, rgb))
+            if len(self._cloud_buffer) > 15:
+                self._cloud_buffer.pop(0)      # 只保留最近 ~0.5s
+            self._cloud_msg_count += 1
+            if msg.header.frame_id:
+                self._color_frame_id = msg.header.frame_id
         except Exception as e:
-            self.get_logger().error(f"depth 解码失败: {e}")
+            self.get_logger().error(f"点云解码失败: {e}")
 
     # ============================================================
     # 按需点云请求（决策系统 → 本节点）
@@ -378,22 +487,40 @@ class YOLOInferenceNode(Node):
 
     def _inference_loop(self):
         image = self._latest_color
-        depth = self._latest_depth
+        color_stamp = self._latest_color_stamp
         camera_info = self._latest_info
-
-        if image is None:
+        if image is None or camera_info is None:
             return
         self._latest_color = None
 
-        # 形状诊断（首帧打印一次）
+        # 点云时间对齐：取与当前彩色图像时间戳最接近的点云帧。
+        # 腕部相机在动时，latest 点云可能比图像晚几十 ms，mask 会裁剪到
+        # 错位的点云 → 边界抖动。按时间戳找最近一帧点云可消除。
+        cloud_xyz = self._latest_cloud_xyz
+        cloud_rgb = self._latest_cloud_rgb
+        if color_stamp is not None and self._cloud_buffer:
+            t_img = _stamp_ns(color_stamp)
+            best_d = float("inf")
+            for st, xyz, rgb in self._cloud_buffer:
+                d = abs(_stamp_ns(st) - t_img)
+                if d < best_d:
+                    best_d, cloud_xyz, cloud_rgb = d, xyz, rgb
+
+        # 首帧诊断
         if not self._shape_warned:
             self._shape_warned = True
             self.get_logger().info(
                 f"[诊断] color={image.shape} dtype={image.dtype} "
-                f"encoding={self._color_encoding}")
+                f"encoding={self._color_encoding} | "
+                f"RealSense云={None if cloud_xyz is None else cloud_xyz.shape} "
+                f"(已收 {self._cloud_msg_count} 帧) | "
+                f"camera_info={camera_info.width}x{camera_info.height}")
+            if cloud_xyz is None:
+                self.get_logger().warn(
+                    "[诊断] 尚未收到 RealSense 点云！请确认相机已启动，"
+                    "且命令行带 pointcloud.enable:=true")
 
-        # YOLO 推理用原图，点云着色需要拷贝（防 predict 内部修改）
-        color_for_cloud = image.copy()
+        color_for_cloud = image.copy()   # YOLO 推理用，不再用于取色
         self._frame_count += 1
 
         # ── 1. YOLO 推理 ──────────────────────────────
@@ -401,33 +528,25 @@ class YOLOInferenceNode(Node):
         result = self.yolo.predict(image)
         inference_ms = result["inference_time_ms"]
         self._total_inference_ms += inference_ms
-
         objects = result.get("objects", [])
 
-        # 形状诊断：检查首帧 mask 与 color/depth 是否对齐
+        # 目标 mask 分辨率 = 彩色图分辨率（以 camera_info 为准，最可靠）
+        target_hw = (int(camera_info.height), int(camera_info.width))
+
+        # mask 分辨率诊断（首帧）
         if objects and not hasattr(self, '_mask_shape_warned'):
             self._mask_shape_warned = True
             m0 = objects[0].get("mask")
             if m0 is not None:
                 self.get_logger().info(
-                    f"[诊断] mask={m0.shape} color={color_for_cloud.shape} "
-                    f"depth={depth.shape if depth is not None else None}")
-                if depth is not None and m0.shape != depth.shape:
-                    self.get_logger().error(
-                        f"[诊断] ✗ mask 与 depth 形状不匹配！"
-                        f"mask={m0.shape} depth={depth.shape} —— "
-                        f"YOLO 返回的 mask 分辨率与深度图不一致")
-                if depth is not None and m0.shape != color_for_cloud.shape[:2]:
-                    self.get_logger().error(
-                        f"[诊断] ✗ mask 与 color 形状不匹配！"
-                        f"mask={m0.shape} color={color_for_cloud.shape[:2]}")
+                    f"[诊断] YOLO mask={m0.shape} → 缩放到 {target_hw} 再投影裁剪")
 
         # ── 2. IoU 追踪 ──────────────────────────────
         dets = [{"bbox": _get_bbox(o), "class_name": o["class_name"],
                  "confidence": o["confidence"]} for o in objects]
         tracks = self._tracker.update(dets)
 
-        # ── 3. 生成彩色点云 ───────────────────────────
+        # ── 3. 用 mask 裁剪 RealSense 彩色点云 ────────
         tracked_objects: List[Tuple[int, dict]] = []
         new_clouds: Dict[int, np.ndarray] = {}
 
@@ -437,12 +556,17 @@ class YOLOInferenceNode(Node):
             obj = objects[t.det_idx]
             obj["track_id"] = t.id
 
-            if depth is not None and camera_info is not None and color_for_cloud is not None:
-                cloud = mask_to_pointcloud(
-                    obj["mask"], depth, color_for_cloud, camera_info,
-                    scale=self._depth_scale)
-            else:
+            mask = obj.get("mask")
+            if mask is None or cloud_xyz is None:
                 cloud = np.empty((0, 6), dtype=np.float32)
+            else:
+                try:
+                    mask = ensure_mask_resolution(mask, target_hw)
+                    cloud = crop_cloud_by_mask(
+                        cloud_xyz, cloud_rgb, mask, camera_info)
+                except Exception as e:
+                    self.get_logger().error(f"裁剪点云失败: {e}")
+                    cloud = np.empty((0, 6), dtype=np.float32)
 
             obj["cloud"] = cloud
             tracked_objects.append((t.id, obj))
@@ -460,11 +584,12 @@ class YOLOInferenceNode(Node):
         # ── 4. 发布检测元数据 ─────────────────────────
         self._publish_detections(tracked_objects)
 
-        # ── 5. 调试点云 ───────────────────────────────
+        # ── 5. 调试点云（限频 10Hz，避免 RViz 高频刷新大点云而卡顿）──
         if self._publish_debug_cloud or self._mode == "debug":
             clouds = [obj["cloud"] for _, obj in tracked_objects
                       if obj.get("cloud") is not None and obj["cloud"].shape[0] >= 10]
-            if clouds:
+            if clouds and time.time() - self._last_debug_pub > 0.1:
+                self._last_debug_pub = time.time()
                 now = self.get_clock().now().to_msg()
                 header = Header(stamp=now, frame_id=self._color_frame_id)
                 self.debug_cloud_pub.publish(
@@ -480,7 +605,8 @@ class YOLOInferenceNode(Node):
         # ── 日志 ─────────────────────────────────────
         total_ms = (time.perf_counter() - t0) * 1000
         names = ", ".join(
-            f"#{tid} {obj['class_name']}" for tid, obj in tracked_objects[:5])
+            f"#{tid} {obj['class_name']}({obj['cloud'].shape[0]}点)"
+            for tid, obj in tracked_objects[:5])
         self.get_logger().info(
             f"[#{self._frame_count}] {len(tracked_objects)} 目标: {names} | "
             f"推理={inference_ms:.0f}ms 总={total_ms:.0f}ms",
@@ -522,14 +648,14 @@ class YOLOInferenceNode(Node):
         if self._frame_count == 0:
             self.get_logger().info(
                 f"等待首帧... color={self._color_msg_count} "
-                f"depth={self._depth_msg_count} "
-                f"latest_color={self._latest_color is not None}",
+                f"cloud={self._cloud_msg_count} "
+                f"info={self._latest_info is not None}",
                 throttle_duration_sec=5.0)
             return
         avg = self._total_inference_ms / max(self._frame_count, 1)
         self.get_logger().info(
             f"[状态] {self._frame_count} 帧 | color={self._color_msg_count} "
-            f"depth={self._depth_msg_count} | "
+            f"cloud={self._cloud_msg_count} | "
             f"avg {avg:.0f}ms ({1000/avg:.0f} FPS) | "
             f"活跃目标 {len(self._cloud_cache)} | mode={self._mode}",
             throttle_duration_sec=5.0)
