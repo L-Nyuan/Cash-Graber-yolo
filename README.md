@@ -1,23 +1,72 @@
 # Cash-Graber-yolo
-2026埃斯顿机器人抓取比赛的视觉部分代码仓库
+2026 埃斯顿机器人抓取比赛的视觉部分代码仓库：从 CEPB/真实数据集制作、YOLO11-seg 训练，到 ROS2 实时推理（检测 + 分割 + 彩色点云裁剪）。
 
-`clean_dataset`是对不同视角和不同光照条件数据集的清理，因为在训练过程中发现数据集有冗余，遂添加
+## 工作区结构
 
-`debug_centers`现在的`Seg_To_Txt`的K-means聚类存在问题，所以添加该调试模块，显示经过颜色压缩后的聚类的中心
+```text
+/root/yolo
+├── AGENTS.md                       # 开发约定与易错点（AI/协作使用）
+├── README.md                       # 本文件
+├── scripts/
+│   ├── CEPB/                       # CEPB 官方数据集 → YOLO 格式
+│   ├── Real_rec/                   # 真实数据采集与处理
+│   ├── inference/                  # ROS2 推理节点与配套工具
+│   │   ├── yolo_inference_node_cloud.py   # 主入口节点（见下文）
+│   │   ├── yolo_inference.py              # YOLO 推理封装
+│   │   ├── object_tracker.py              # IoU 多目标追踪
+│   │   ├── image_utils.py                 # 不依赖 cv_bridge 的 ROS Image 解码
+│   │   ├── marker_rviz.py                 # RViz 标记发布
+│   │   ├── visualization_utils.py         # 调试图保存
+│   │   └── mask_point_msg.py              # 未使用的旧版点云消息工具
+│   ├── request_point_debug.py     # 按需点云请求调试脚本
+│   ├── yolo_train.py              # 阶段 1：CEPB 基线训练
+│   ├── train_freeze.py            # 阶段 2：冻结 backbone 微调
+│   └── train_final.py             # 阶段 3：解冻全模型微调
+├── dataset_real_remapped/          # 真实 + CEPB 混合 YOLO 数据集（images/labels + data.yaml）
+├── dataset_temp/                   # 少量 CEPB 示例数据
+├── result/
+│   ├── freeze/                     # 阶段 2 权重
+│   └── final/                      # 阶段 3 最终权重（best.pt / last.pt）
+├── runs/                           # ultralytics 训练日志与验证输出
+├── test_output/                    # Seg_To_Txt 转换测试输出（images/labels）
+├── debug_log/                      # 调试记录（如点云 QoS 问题排查）
+├── yolo_debug/                     # 推理节点调试输出目录
+└── rgb_test/                       # 相机 RGB 通道排查图片
+```
 
-`interacitve_color_picker`因为K-means聚类的问题和数据集关系比较大，懒得解决，所以直接手动取颜色作为聚类中心
+## 数据集处理
 
-`preview_letterbox`防止yolo网络内部对图像压缩太狠（目前是640*640），导致无法看到小物品，所以提前预览
+### 1. CEPB 官方数据集 → YOLO 格式（`scripts/CEPB/`）
 
-`visualize_labels`绘制txt数据集和中包围点segmentation，检查制作成果
+官方数据集中有很多多余的深度图像，转换前删掉即可。
 
-`Seg_To_Txt`从官方数据集到Yolo可用数据格式（文件格式需要另外调整）
+| 脚本 | 作用 |
+| --- | --- |
+| `Seg_To_Txt.py` | 主转换：把 CEPB 官方 yaml GT + RGB/segmentation 图转成 YOLO 分割格式（images/labels/dataset.yaml），以 GT 2D 质心为初始中心做 KMeans 聚类生成 polygon。输出 `/root/dataset_seg/` |
+| `clean_dataset.py` | 清理冗余：同一场景同一视角的多光源图（dir/point/spot）只保留一张，避免数据集重复 |
+| `debug_centers.py` | 调试：可视化 KMeans 聚类中心颜色与量化后 seg 图，排查聚类错位 |
+| `interactive_color_picker.py` | 手动取色：交互式点击 seg 图取 RGB 作为聚类中心（KMeans 效果不好时的替代方案） |
+| `preview_letterbox.py` | 预览 YOLO 640×640 letterbox 效果，防止小物体被压缩丢失 |
+| `visualize_labels.py` | 把 YOLO polygon 标签画回图像，检查标注是否正确 |
+| `check_labels.py` | 从训练集每类随机抽 N 张绘制标签，检查标注错位 |
 
-`yolo_train`训练主函数
+### 2. 真实数据集采集与处理（`scripts/Real_rec/`）
 
+| 脚本 | 作用 |
+| --- | --- |
+| `record_realsense.py` | 用 RealSense 录制 RGB 视频为 H.264 MP4（可指定分辨率/时长） |
+| `extract_frames.py` | 从视频按时间/帧数间隔抽帧，带模糊过滤 |
+| `capture_click.py` | RealSense 实时预览，按键逐帧保存（命名 `MM_NNN.jpg`） |
+| `remap_labels.py` | 把 Roboflow 导出的字母序 class id 重映射为目标数据集顺序 |
+| `sample_cepb_to_real.py` | 从 CEPB 按类别均匀采样 N 张复制进真实数据集（加 `cepb_` 前缀防重名） |
 
-官方数据集中有很多多余的深度图像，删掉就行了
+真实数据流程：采集视频 → 抽帧/按键存图 → 标注清洗 → `remap_labels` 对齐类别 → `sample_cepb_to_real` 混入 CEPB → 训练。
 
+### 3. 数据集处理正确性检查
+
+下面这个命令用训练好的模型对一张验证图跑推理并保存可视化，用来确认「数据集 → 训练 → 模型」整条链路是否正常，也常用来检查标注/分割结果是否正确：
+
+```python
 python -c "
 import cv2, sys
 sys.path.insert(0, '/root/yolo/scripts/inference')
@@ -36,11 +85,19 @@ for o in r['objects']:
     print(f\"  {o['class_name']:20s} conf={o['confidence']:.2f}  pixels={o['mask'].sum()}\")
 
 save_debug_image(img_rgb, r['objects'], '/root/yolo/debug_test4501.jpg')
-print('可视化已保存: /root/yolo/debug_test.jpg')
+print('可视化已保存: /root/yolo/debug_test4501.jpg')
 "
+```
 
-python yolo_inference_node.py --ros-args -p mode:=debug
+## 训练（`scripts/`）
 
+三阶段策略：
+
+| 脚本 | 阶段 | 说明 |
+| --- | --- | --- |
+| `yolo_train.py` | 1 | CEPB 数据上的 yolo11m-seg 基线训练 |
+| `train_freeze.py` | 2 | 冻结 backbone，在混合数据（真实 + CEPB）上微调 |
+| `train_final.py` | 3 | 解冻全模型、低学习率精细微调，产出 `result/final/` |
 
 ## 主推理节点：yolo_inference_node_cloud.py
 

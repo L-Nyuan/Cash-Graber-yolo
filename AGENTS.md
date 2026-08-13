@@ -16,15 +16,15 @@
 ```text
 RealSense D435i
   ├─ RGB 图 / color/image_raw
-  ├─ 深度图 / aligned_depth_to_color/image_raw（旧版节点用）
+  ├─ 深度图 / aligned_depth_to_color/image_raw（当前节点不订阅，仅对齐用）
   ├─ CameraInfo / color/camera_info
-  └─ 彩色点云 / depth/color/points（cloud 版节点用）
+  └─ 彩色点云 / depth/color/points（节点点云来源）
               │
               ▼
 YOLO11-seg 推理
   ├─ mask / bbox / class / confidence
   ├─ IoU 多目标追踪 → track_id
-  └─ 物体点云裁剪或反投影
+  └─ 物体点云裁剪
               │
               ▼
 发布：
@@ -80,9 +80,6 @@ cd /root/yolo/scripts/inference
 
 # 当前主要调试版本：RealSense 彩色点云直取 + 时间同步
 python yolo_inference_node_cloud.py --ros-args -p mode:=debug
-
-# 早期版本：depth + 反投影
-python yolo_inference_node.py --ros-args -p mode:=debug
 ```
 
 ### 2.4 调试点云请求
@@ -98,7 +95,7 @@ python request_point_debug.py \
 ```text
 /root/yolo
 ├── AGENTS.md                       本文件
-├── README.md                       旧版项目说明与单帧推理示例
+├── README.md                       项目说明（数据集处理/训练/推理节点）
 ├── debug_log/                      调试记录（如点云 QoS 不匹配问题）
 ├── dataset_real_remapped/          真实数据 YOLO 数据集（train/val + data.yaml）
 ├── dataset_temp/                   少量 CEPB 示例数据
@@ -111,12 +108,11 @@ python request_point_debug.py \
 └── scripts/
     ├── inference/
     │   ├── yolo_inference_node_cloud.py   当前主要节点：彩色点云直取+同步
-    │   ├── yolo_inference_node.py         旧版节点：深度反投影
     │   ├── yolo_inference.py              YOLO 推理封装
     │   ├── object_tracker.py              IoU 多目标追踪
     │   ├── image_utils.py                 不依赖 cv_bridge 的 ROS Image 解码
     │   ├── marker_rviz.py                 RViz marker
-    │   ├── mask_point_msg.py              旧版点云消息工具
+    │   ├── mask_point_msg.py              未使用的旧版点云消息工具（保留待清理）
     │   ├── visualization_utils.py         调试图保存
     │   └── test_ros2_caramer.py           相机通信测试脚本
     ├── request_point_debug.py             点云请求/保存调试脚本
@@ -166,7 +162,7 @@ python request_point_debug.py \
 
 特点：
 
-- 直接从 RealSense 的 `/depth/color/points` 彩色点云裁剪，而不是自己反投影深度。
+- 直接从 RealSense 的 `/depth/color/points` 彩色点云裁剪。
 - 输出内容由 `mode` 统一控制：`production` 只发布 `/yolo/detections`（识别标签）和按需 `/yolo/object_cloud`；`debug` 额外发布所有物品点云 `/yolo/debug_cloud` 与 RViz 标记 `/yolo/markers`。
 - 用时间戳在彩色图和点云之间做最近邻匹配，超过 `sync.tolerance` 时默认不裁剪，避免旧 mask 套新点云。
 - 有 `sync.buffer_size` 缓冲、`sync.pending_wait` 短等待、离群点移除和 mask 腐蚀。
@@ -176,17 +172,12 @@ python request_point_debug.py \
 
 点云订阅当前使用 `RELIABLE`。此前用 `BEST_EFFORT` 时，RealSense 发布端存在“无有效订阅者就不生成点云”的门控逻辑，导致 `cloud_msgs` 一直为 0、日志持续 `WAIT_CLOUD`；已改为与发布端一致的 `RELIABLE` 解决，完整排查过程见 `debug_log/2026-08-13_yolo_pointcloud_qos_debug.md`。
 
-### 5.2 `yolo_inference_node.py`（旧版）
-
-订阅对齐深度图，用 `mask_to_pointcloud()` 反投影生成点云。功能可用，但当前调试重点已经转向 cloud 版；二者维护时要避免重复修同一处逻辑。
-
-
 ## 6. 重要约定与易错点
 
 - **不要引入 `cv_bridge`**：当前环境 NumPy 版本与 cv_bridge 存在冲突，手动解码是有意为之。
 - **不要擅自改 QoS**：相机类订阅与 RealSense 发布端必须兼容。cloud 节点中 color、camera_info、pointcloud 三个订阅以及检测/点云发布均使用 `RELIABLE`；曾因点云订阅用 `BEST_EFFORT` 导致 RealSense 不发布点云，见 `debug_log/2026-08-13_yolo_pointcloud_qos_debug.md`。
 - **相机话题带命名空间**：当前默认是 `/Wrist_Camera/d435i/...`，不是无前缀的 `/d435i/...`；cloud 节点已参数化，改话题用 `topic.cloud`、`topic.color`、`topic.info`。
-- **YOLO mask 分辨率必须与点云/相机内参对齐**：cloud 版会先 `ensure_mask_resolution()` 再投影裁剪；旧版会打印形状不匹配错误。
+- **YOLO mask 分辨率必须与点云/相机内参对齐**：节点会先 `ensure_mask_resolution()` 再投影裁剪。
 - **单线程执行器**：不要在回调里做长阻塞操作；节点已改成 50ms 定时器驱动，`_latest_*` 缓存并配合同步逻辑。
 - **按需点云协议**：`/yolo/detections` 只给元数据，下游必须用 `/yolo/request_object_cloud` 发 `Int32(track_id)` 再收 `/yolo/object_cloud`。
 
