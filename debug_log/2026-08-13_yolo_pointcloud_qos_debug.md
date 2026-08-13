@@ -197,3 +197,7 @@ python yolo_inference_node_cloud.py \
 1. YOLO 的 color、camera_info、pointcloud 三个订阅应尽量使用一致的 QoS。
 2. RealSense 点云话题属于较大的 PointCloud2 消息，不建议使用 BEST_EFFORT 订阅，否则可能出现发布端订阅计数门控导致点云不发布。
 3. 再次遇到“topic info 中有订阅，但实际收不到数据”的问题，应分别用 RELIABLE 和 BEST_EFFORT 的 `ros2 topic echo` 做对比验证。
+
+## 后续变更（同日）
+
+节点参数已按前缀分组重命名（`model.*`、`tracker.*`、`cloud.*`、`sync.*`、`topic.*`、`debug.*`），输出内容改由 `mode` 统一控制：production 只发布识别标签与按需点云，debug 额外发布所有物品点云和 RViz 标记。上面示例里的旧参数名（如 `publish_debug_cloud`、`sync_debug`）已不再使用，最新用法见 `README.md`。

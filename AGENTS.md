@@ -79,8 +79,7 @@ ros2 launch realsense2_camera rs_launch.py     pointcloud.enable:=true     align
 cd /root/yolo/scripts/inference
 
 # 当前主要调试版本：RealSense 彩色点云直取 + 时间同步
-python yolo_inference_node_cloud.py \
-  --ros-args -p mode:=debug -p sync_debug:=true -p publish_debug_cloud:=true
+python yolo_inference_node_cloud.py --ros-args -p mode:=debug
 
 # 早期版本：depth + 反投影
 python yolo_inference_node.py --ros-args -p mode:=debug
@@ -168,11 +167,12 @@ python request_point_debug.py \
 特点：
 
 - 直接从 RealSense 的 `/depth/color/points` 彩色点云裁剪，而不是自己反投影深度。
-- 用时间戳在彩色图和点云之间做最近邻匹配，超过 `sync_tolerance` 时默认不裁剪，避免旧 mask 套新点云。
-- 有 `cloud_buffer_size` 缓冲、`pending_max_wait` 短等待、离群点移除和 mask 腐蚀。
+- 输出内容由 `mode` 统一控制：`production` 只发布 `/yolo/detections`（识别标签）和按需 `/yolo/object_cloud`；`debug` 额外发布所有物品点云 `/yolo/debug_cloud` 与 RViz 标记 `/yolo/markers`。
+- 用时间戳在彩色图和点云之间做最近邻匹配，超过 `sync.tolerance` 时默认不裁剪，避免旧 mask 套新点云。
+- 有 `sync.buffer_size` 缓冲、`sync.pending_wait` 短等待、离群点移除和 mask 腐蚀。
 - 点云缓存按 `track_id` 维护；未同步时清空旧缓存。
 
-关键参数可在运行时用 `--ros-args -p name:=value` 覆盖。
+参数按前缀分组，运行时用 `--ros-args -p 组名.参数:=值` 覆盖（如 `model.conf`、`sync.tolerance`、`topic.cloud`）。
 
 点云订阅当前使用 `RELIABLE`。此前用 `BEST_EFFORT` 时，RealSense 发布端存在“无有效订阅者就不生成点云”的门控逻辑，导致 `cloud_msgs` 一直为 0、日志持续 `WAIT_CLOUD`；已改为与发布端一致的 `RELIABLE` 解决，完整排查过程见 `debug_log/2026-08-13_yolo_pointcloud_qos_debug.md`。
 
@@ -185,7 +185,7 @@ python request_point_debug.py \
 
 - **不要引入 `cv_bridge`**：当前环境 NumPy 版本与 cv_bridge 存在冲突，手动解码是有意为之。
 - **不要擅自改 QoS**：相机类订阅与 RealSense 发布端必须兼容。cloud 节点中 color、camera_info、pointcloud 三个订阅以及检测/点云发布均使用 `RELIABLE`；曾因点云订阅用 `BEST_EFFORT` 导致 RealSense 不发布点云，见 `debug_log/2026-08-13_yolo_pointcloud_qos_debug.md`。
-- **相机话题带命名空间**：当前默认是 `/Wrist_Camera/d435i/...`，不是无前缀的 `/d435i/...`；cloud 节点已参数化，改话题用 `cloud_topic`、`color_topic`、`info_topic`。
+- **相机话题带命名空间**：当前默认是 `/Wrist_Camera/d435i/...`，不是无前缀的 `/d435i/...`；cloud 节点已参数化，改话题用 `topic.cloud`、`topic.color`、`topic.info`。
 - **YOLO mask 分辨率必须与点云/相机内参对齐**：cloud 版会先 `ensure_mask_resolution()` 再投影裁剪；旧版会打印形状不匹配错误。
 - **单线程执行器**：不要在回调里做长阻塞操作；节点已改成 50ms 定时器驱动，`_latest_*` 缓存并配合同步逻辑。
 - **按需点云协议**：`/yolo/detections` 只给元数据，下游必须用 `/yolo/request_object_cloud` 发 `Int32(track_id)` 再收 `/yolo/object_cloud`。

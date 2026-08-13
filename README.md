@@ -64,55 +64,64 @@ ros2 launch realsense2_camera rs_launch.py \
   camera_namespace:="Wrist_Camera"
 ```
 
-再启动推理节点（建议先激活 yolo 虚拟环境）：
+再启动推理节点（建议先激活 yolo 虚拟环境）。输出内容由 `mode` 统一控制：
+
+| 模式 | 输出 |
+| --- | --- |
+| `production`（默认） | 只输出识别标签 `/yolo/detections` 和按需点云 `/yolo/object_cloud`，无调试发布 |
+| `debug` | 在 production 基础上，额外发布所有识别物品的点云 `/yolo/debug_cloud`、RViz 标记 `/yolo/markers`，并默认打开同步/裁剪调试日志 |
+
+生产模式：
 
 ```bash
-python scripts/inference/yolo_inference_node_cloud.py --ros-args -p mode:=production
+python scripts/inference/yolo_inference_node_cloud.py --ros-args
 ```
 
-调试模式（打开同步调试日志、发布调试点云）：
+调试模式：
 
 ```bash
 python scripts/inference/yolo_inference_node_cloud.py --ros-args \
   -p mode:=debug \
-  -p publish_debug_cloud:=true \
-  -p sync_debug:=true \
   --log-level yolo_inference_node:=debug
 ```
 
-如果相机时间戳存在固定偏差、彩色图和点云匹配不上，可以放宽/收紧同步容差：
+调试模式下 `/yolo/detections` 的 JSON 会额外带每个物品的 `cloud_points`（裁剪点数）和 `cloud_centroid`（点云质心），方便核对“所有物品的点云”是否裁到。
+
+调参示例（参数按前缀分组，写法统一为 `-p 组名.参数:=值`）：
 
 ```bash
-python scripts/inference/yolo_inference_node_cloud.py --ros-args -p sync_tolerance:=0.08
+# 手腕相机移动快时收紧同步容差
+python scripts/inference/yolo_inference_node_cloud.py --ros-args -p sync.tolerance:=0.03
+
+# 降低置信度阈值 / 切换模型
+python scripts/inference/yolo_inference_node_cloud.py --ros-args \
+  -p model.conf:=0.5 -p model.path:=/root/yolo/result/final/last.pt
 ```
 
-### 命令行参数（`-p 参数名:=值`）
+### 命令行参数（`-p 组名.参数:=值`）
 
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `model_path` | `/root/yolo/result/final/best.pt` | YOLO 权重路径 |
-| `imgsz` | `640` | 推理输入尺寸（边长） |
-| `conf` | `0.8` | 置信度阈值 |
-| `iou` | `0.7` | NMS 的 IoU 阈值 |
-| `mode` | `production` | `production` / `debug`；debug 模式会无条件发布调试点云和 RViz 标记，并输出更多日志 |
-| `publish_debug_cloud` | `false` | 发布裁剪后目标点云到 `/yolo/debug_cloud` |
-| `publish_markers` | `false` | 发布检测框标记到 `/yolo/markers`（RViz 用） |
-| `debug` | `false` | 调试开关；为 true 且环境有可视化依赖时创建 `debug_dir` 目录（当前版本仅建目录，图片保存逻辑尚未接入） |
-| `debug_cloud_hz` | `15.0` | `/yolo/debug_cloud` 的最大发布频率（Hz） |
-| `debug_dir` | `/root/yolo/yolo_debug` | 调试图片保存目录 |
-| `tracker_max_age` | `30` | 追踪器允许目标消失的最大帧数，超过则丢弃该 ID |
-| `tracker_min_hits` | `3` | 新目标需要连续命中多少帧才确认（避免闪烁 ID） |
-| `tracker_iou_threshold` | `0.3` | 追踪关联时判断“同一目标”的 IoU 阈值 |
-| `mask_erode` | `1` | 分割 mask 腐蚀迭代次数，用于剔除目标边缘的噪声点云点 |
-| `cloud_sor` | `true` | 对裁剪出的点云做统计离群点移除（需要 open3d；缺失时自动跳过） |
-| `sync_tolerance` | `0.05` | 彩色图与点云时间戳匹配容差（秒） |
-| `require_synced_cloud` | `true` | 为 true 时只裁剪与彩色图同步的点云，找不到就跳过本帧；为 false 时退回使用最近一帧点云 |
-| `sync_debug` | `true` | 输出同步/裁剪过程的 DEBUG 级日志（需配合 `--log-level` 使用） |
-| `cloud_buffer_size` | `30` | 点云时间戳缓存的最大帧数，用于与彩色图匹配 |
-| `pending_max_wait` | `0.12` | 彩色图最多等待点云多少秒，超时丢弃该帧，避免死等 |
-| `cloud_topic` | `/Wrist_Camera/d435i/depth/color/points` | 彩色点云话题 |
-| `color_topic` | `/Wrist_Camera/d435i/color/image_raw` | 彩色图话题 |
-| `info_topic` | `/Wrist_Camera/d435i/color/camera_info` | 相机内参话题（点云投影裁剪用） |
+| 分组 | 参数 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| — | `mode` | `production` | `production` / `debug`，统一决定输出内容 |
+| `model` | `.path` | `/root/yolo/result/final/best.pt` | YOLO 权重路径 |
+| `model` | `.imgsz` | `640` | 推理输入尺寸（边长） |
+| `model` | `.conf` | `0.8` | 置信度阈值 |
+| `model` | `.iou` | `0.7` | NMS 的 IoU 阈值 |
+| `tracker` | `.max_age` | `30` | 目标消失超过该帧数则丢弃 ID |
+| `tracker` | `.min_hits` | `3` | 新目标需连续命中多少帧才确认（避免闪烁 ID） |
+| `tracker` | `.iou` | `0.3` | 追踪关联时判断“同一目标”的 IoU 阈值 |
+| `cloud` | `.mask_erode` | `1` | 分割 mask 腐蚀迭代次数，剔除目标边缘噪声点 |
+| `cloud` | `.sor` | `true` | 对裁剪点云做统计离群点移除（需 open3d，缺失自动跳过） |
+| `sync` | `.tolerance` | `0.05` | 彩色图与点云时间戳匹配容差（秒） |
+| `sync` | `.require_cloud` | `true` | true 时只裁剪同步点云，找不到则跳过本帧；false 时退回最近一帧 |
+| `sync` | `.buffer_size` | `30` | 点云时间戳缓存最大帧数 |
+| `sync` | `.pending_wait` | `0.12` | 彩色图最多等待点云多少秒，超时丢弃该帧 |
+| `sync` | `.debug` | `false` | 同步/裁剪 DEBUG 日志；debug 模式下默认开启 |
+| `topic` | `.cloud` | `/Wrist_Camera/d435i/depth/color/points` | 彩色点云话题 |
+| `topic` | `.color` | `/Wrist_Camera/d435i/color/image_raw` | 彩色图话题 |
+| `topic` | `.info` | `/Wrist_Camera/d435i/color/camera_info` | 相机内参话题（投影裁剪用） |
+| `debug` | `.cloud_hz` | `15.0` | `/yolo/debug_cloud` 最大发布频率（Hz），仅 debug 模式生效 |
+| `debug` | `.dir` | `/root/yolo/yolo_debug` | 调试输出目录，仅 debug 模式生效 |
 
 ### 话题与 QoS
 
@@ -120,18 +129,23 @@ python scripts/inference/yolo_inference_node_cloud.py --ros-args -p sync_toleran
 
 | 话题 | 类型 |
 | --- | --- |
-| `cloud_topic` | `sensor_msgs/msg/PointCloud2`（RELIABLE，与 RealSense 发布端一致） |
-| `color_topic` | `sensor_msgs/msg/Image` |
-| `info_topic` | `sensor_msgs/msg/CameraInfo` |
+| `topic.cloud` | `sensor_msgs/msg/PointCloud2`（RELIABLE，与 RealSense 发布端一致） |
+| `topic.color` | `sensor_msgs/msg/Image` |
+| `topic.info` | `sensor_msgs/msg/CameraInfo` |
 | `/yolo/request_object_cloud` | `std_msgs/msg/Int32`（请求指定 track_id 的最新目标点云） |
 
-发布：
+发布（始终）：
 
 | 话题 | 类型 | 说明 |
 | --- | --- | --- |
-| `/yolo/detections` | `std_msgs/msg/String` | 检测结果 JSON（id、类别、置信度、中心点、bbox） |
-| `/yolo/object_cloud` | `sensor_msgs/msg/PointCloud2` | 请求到的目标点云 |
-| `/yolo/debug_cloud` | `sensor_msgs/msg/PointCloud2` | 调试点云（`publish_debug_cloud:=true` 或 debug 模式） |
-| `/yolo/markers` | `visualization_msgs/msg/MarkerArray` | RViz 标记（`publish_markers:=true` 或 debug 模式） |
+| `/yolo/detections` | `std_msgs/msg/String` | 识别标签 JSON（id、类别、置信度、中心点、bbox；debug 模式附加 `cloud_points`/`cloud_centroid`） |
+| `/yolo/object_cloud` | `sensor_msgs/msg/PointCloud2` | 按请求返回的单个目标点云 |
+
+发布（仅 debug 模式）：
+
+| 话题 | 类型 | 说明 |
+| --- | --- | --- |
+| `/yolo/debug_cloud` | `sensor_msgs/msg/PointCloud2` | 本帧所有识别物品的裁剪点云（合并） |
+| `/yolo/markers` | `visualization_msgs/msg/MarkerArray` | RViz 检测框标记 |
 
 注意：点云订阅使用 RELIABLE / KEEP_LAST(10)，与 RealSense 发布端 QoS 保持一致。若改成 BEST_EFFORT，在部分 RMW（如 CycloneDDS）下会导致订阅匹配不上、收不到点云。这是此前排查过的一个坑，改 QoS 前先确认发布端配置。

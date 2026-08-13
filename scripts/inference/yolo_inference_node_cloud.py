@@ -9,20 +9,24 @@ YOLO11-seg ROS2 推理节点（RealSense 彩色点云直取版，带同步诊断
   2. 清空点云缓存，防止决策系统请求到上一帧/上一姿态的旧点云。
   3. 增加 sync/crop 调试日志，可直接用 ROS2 logger debug 级别输出。
 
-运行示例：
-  # 默认模式
-  python yolo_inference_node_rs_cloud_debug.py --ros-args -p mode:=production
+参数按前缀分组，命令行更规整：
+  model.   模型（权重、尺寸、阈值）
+  tracker. IoU 追踪器
+  cloud.   点云后处理（mask 腐蚀、离群点移除）
+  sync.    彩色图/点云时间同步
+  topic.   话题名
+  debug.   调试输出（仅 mode=debug 生效）
 
-  # 详细 debug 日志
-  python yolo_inference_node_rs_cloud_debug.py --ros-args \
-    -p mode:=debug \
-    -p publish_debug_cloud:=true \
-    -p sync_debug:=true \
+运行示例：
+  # 生产模式（默认）：只输出识别标签 /yolo/detections + 按需点云 /yolo/object_cloud
+  python yolo_inference_node_cloud.py --ros-args
+
+  # 调试模式：额外发布所有识别物品的点云 /yolo/debug_cloud 与 RViz 标记 /yolo/markers
+  python yolo_inference_node_cloud.py --ros-args -p mode:=debug \
     --log-level yolo_inference_node:=debug
 
   # 手腕相机移动快时，可以收紧同步容差：
-  python yolo_inference_node_rs_cloud_debug.py --ros-args \
-    -p sync_tolerance:=0.03
+  python yolo_inference_node_cloud.py --ros-args -p sync.tolerance:=0.03
 """
 
 import json
@@ -42,12 +46,6 @@ from std_msgs.msg import Header, String, Int32
 from image_utils import ros_image_to_numpy
 from yolo_inference import YOLOSegInference
 from object_tracker import ObjectTracker
-
-try:
-    from visualization_utils import save_debug_image
-    _HAS_VIZ = True
-except ImportError:
-    _HAS_VIZ = False
 
 try:
     from marker_rviz import _publish_markers
@@ -275,70 +273,79 @@ class YOLOInferenceNode(Node):
     def __init__(self):
         super().__init__("yolo_inference_node")
 
-        # ── 参数 ─────────────────────────────────────────
-        self.declare_parameter("model_path", "/root/yolo/result/final/best.pt")
-        self.declare_parameter("imgsz", 640)
-        self.declare_parameter("conf", 0.8)
-        self.declare_parameter("iou", 0.7)
+        # ── 参数（按前缀分组，命令行更规整）────────────────
+        # mode: production | debug
         self.declare_parameter("mode", "production")
-        self.declare_parameter("publish_debug_cloud", False)
-        self.declare_parameter("publish_markers", False)
-        self.declare_parameter("debug", False)
-        self.declare_parameter("debug_cloud_hz", 15.0)
-        self.declare_parameter("debug_dir", "/root/yolo/yolo_debug")
-        self.declare_parameter("tracker_max_age", 30)
-        self.declare_parameter("tracker_min_hits", 3)
-        self.declare_parameter("tracker_iou_threshold", 0.3)
-        self.declare_parameter("mask_erode", 1)
-        self.declare_parameter("cloud_sor", True)
+        # model.* 模型
+        self.declare_parameter("model.path", "/root/yolo/result/final/best.pt")
+        self.declare_parameter("model.imgsz", 640)
+        self.declare_parameter("model.conf", 0.8)
+        self.declare_parameter("model.iou", 0.7)
+        # tracker.* IoU 追踪器
+        self.declare_parameter("tracker.max_age", 30)
+        self.declare_parameter("tracker.min_hits", 3)
+        self.declare_parameter("tracker.iou", 0.3)
+        # cloud.* 点云后处理
+        self.declare_parameter("cloud.mask_erode", 1)
+        self.declare_parameter("cloud.sor", True)
+        # sync.* 彩色图/点云时间同步
+        self.declare_parameter("sync.tolerance", 0.05)
+        self.declare_parameter("sync.require_cloud", True)
+        self.declare_parameter("sync.buffer_size", 30)
+        self.declare_parameter("sync.pending_wait", 0.12)
+        self.declare_parameter("sync.debug", False)
+        # topic.* 话题名（如需改命名空间可覆盖）
+        self.declare_parameter(
+            "topic.cloud", "/Wrist_Camera/d435i/depth/color/points")
+        self.declare_parameter(
+            "topic.color", "/Wrist_Camera/d435i/color/image_raw")
+        self.declare_parameter(
+            "topic.info", "/Wrist_Camera/d435i/color/camera_info")
+        # debug.* 调试输出（仅 mode=debug 生效）
+        self.declare_parameter("debug.cloud_hz", 15.0)
+        self.declare_parameter("debug.dir", "/root/yolo/yolo_debug")
 
-        # 时间同步参数
-        self.declare_parameter("sync_tolerance", 0.05)
-        self.declare_parameter("require_synced_cloud", True)
-        self.declare_parameter("sync_debug", True)
-        self.declare_parameter("cloud_buffer_size", 30)
-        self.declare_parameter("pending_max_wait", 0.12)
+        # ── 模式：统一决定输出内容 ────────────────────────
+        self._mode = str(self.get_parameter("mode").value).strip().lower()
+        if self._mode not in ("production", "debug"):
+            self.get_logger().warn(
+                f"未知 mode={self._mode}，回退到 production")
+            self._mode = "production"
+        self._debug_mode = (self._mode == "debug")
 
-        # ── 话题名（如需改命名空间可覆盖）────────────────
-        self.declare_parameter("cloud_topic", "/Wrist_Camera/d435i/depth/color/points")
-        self.declare_parameter("color_topic", "/Wrist_Camera/d435i/color/image_raw")
-        self.declare_parameter("info_topic", "/Wrist_Camera/d435i/color/camera_info")
-
-        self._cloud_topic = self.get_parameter("cloud_topic").value
-        self._color_topic = self.get_parameter("color_topic").value
-        self._info_topic = self.get_parameter("info_topic").value
+        self._cloud_topic = self.get_parameter("topic.cloud").value
+        self._color_topic = self.get_parameter("topic.color").value
+        self._info_topic = self.get_parameter("topic.info").value
 
         self._sync_tolerance_ns = int(
-            self.get_parameter("sync_tolerance").value * 1_000_000_000)
+            self.get_parameter("sync.tolerance").value * 1_000_000_000)
         self._require_synced_cloud = bool(
-            self.get_parameter("require_synced_cloud").value)
-        self._sync_debug = bool(self.get_parameter("sync_debug").value)
+            self.get_parameter("sync.require_cloud").value)
+        # 同步调试日志：debug 模式默认开启，production 默认关闭
+        self._sync_debug = (bool(self.get_parameter("sync.debug").value)
+                            or self._debug_mode)
         self._cloud_buffer_size = int(
-            self.get_parameter("cloud_buffer_size").value)
+            self.get_parameter("sync.buffer_size").value)
         self._pending_max_wait = float(
-            self.get_parameter("pending_max_wait").value)
+            self.get_parameter("sync.pending_wait").value)
 
         # ── YOLO 模型 ────────────────────────────────────
         self.yolo = YOLOSegInference(
-            model_path=self.get_parameter("model_path").value,
-            imgsz=self.get_parameter("imgsz").value,
-            conf=self.get_parameter("conf").value,
-            iou=self.get_parameter("iou").value,
+            model_path=self.get_parameter("model.path").value,
+            imgsz=self.get_parameter("model.imgsz").value,
+            conf=self.get_parameter("model.conf").value,
+            iou=self.get_parameter("model.iou").value,
         )
 
-        self._mode = self.get_parameter("mode").value
-        self._publish_debug_cloud = self.get_parameter("publish_debug_cloud").value
-        self._publish_markers = self.get_parameter("publish_markers").value
-        self._debug = self.get_parameter("debug").value
         self._debug_cloud_interval = (
-            1.0 / max(float(self.get_parameter("debug_cloud_hz").value), 1.0))
-        self._debug_dir = self.get_parameter("debug_dir").value
-        if self._debug and _HAS_VIZ:
+            1.0 / max(float(self.get_parameter("debug.cloud_hz").value), 1.0))
+        self._debug_dir = self.get_parameter("debug.dir").value
+        if self._debug_mode:
             os.makedirs(self._debug_dir, exist_ok=True)
 
         # ── 点云后处理 ─────────────────────────────────────
-        self._mask_erode = int(self.get_parameter("mask_erode").value)
-        self._cloud_sor = bool(self.get_parameter("cloud_sor").value)
+        self._mask_erode = int(self.get_parameter("cloud.mask_erode").value)
+        self._cloud_sor = bool(self.get_parameter("cloud.sor").value)
         self._o3d = None
         if self._cloud_sor:
             try:
@@ -350,9 +357,9 @@ class YOLOInferenceNode(Node):
 
         # ── 追踪器 ───────────────────────────────────────
         self._tracker = ObjectTracker(
-            max_age=self.get_parameter("tracker_max_age").value,
-            min_hits=self.get_parameter("tracker_min_hits").value,
-            iou_threshold=self.get_parameter("tracker_iou_threshold").value,
+            max_age=self.get_parameter("tracker.max_age").value,
+            min_hits=self.get_parameter("tracker.min_hits").value,
+            iou_threshold=self.get_parameter("tracker.iou").value,
         )
 
         # ── 点云缓存：track_id → (N,6) xyz+rgb ─────────
@@ -388,10 +395,9 @@ class YOLOInferenceNode(Node):
             Int32, "/yolo/request_object_cloud",
             self._on_request_cloud, qos_reliable)
 
-        if self._publish_debug_cloud or self._mode == "debug":
+        if self._debug_mode:
             self.debug_cloud_pub = self.create_publisher(
                 PointCloud2, "/yolo/debug_cloud", qos_reliable)
-        if self._publish_markers or self._mode == "debug":
             if _HAS_MARKER:
                 from visualization_msgs.msg import MarkerArray
                 self.marker_pub = self.create_publisher(
@@ -433,11 +439,13 @@ class YOLOInferenceNode(Node):
 
         self.get_logger().info(
             f"YOLOInferenceNode(RealSense云, synced) 启动 | mode={self._mode} | "
-            f"model={self.get_parameter('model_path').value} | "
-            f"imgsz={self.get_parameter('imgsz').value} | "
+            f"model={self.get_parameter('model.path').value} | "
+            f"imgsz={self.get_parameter('model.imgsz').value} | "
             f"点云来源: {self._cloud_topic} | "
-            f"sync_tolerance={self.get_parameter('sync_tolerance').value:.3f}s | "
-            f"require_synced_cloud={self._require_synced_cloud}"
+            f"sync.tolerance={self.get_parameter('sync.tolerance').value:.3f}s | "
+            f"sync.require_cloud={self._require_synced_cloud} | "
+            f"输出: /yolo/detections + /yolo/object_cloud"
+            + (" + /yolo/debug_cloud + /yolo/markers" if self._debug_mode else "")
         )
 
     # ============================================================
@@ -793,8 +801,8 @@ class YOLOInferenceNode(Node):
         # ── 4. 发布检测元数据 ─────────────────────────
         self._publish_detections(tracked_objects)
 
-        # ── 5. 调试点云 ───────────────────────────────
-        if self._publish_debug_cloud or self._mode == "debug":
+        # ── 5. 调试点云（debug 模式：所有识别物品的点云）──
+        if self._debug_mode:
             clouds = [obj["cloud"] for _, obj in tracked_objects
                       if obj.get("cloud") is not None and obj["cloud"].shape[0] >= 10]
             if clouds and time.time() - self._last_debug_pub > self._debug_cloud_interval:
@@ -806,7 +814,7 @@ class YOLOInferenceNode(Node):
                 self.debug_cloud_pub.publish(
                     build_pointcloud2(np.vstack(clouds), header))
 
-        if (self._publish_markers or self._mode == "debug") and _HAS_MARKER:
+        if self._debug_mode and _HAS_MARKER:
             if hasattr(self, "marker_pub"):
                 now = self.get_clock().now().to_msg()
                 header = Header(stamp=now, frame_id=self._color_frame_id)
@@ -839,14 +847,23 @@ class YOLOInferenceNode(Node):
         }
         for tid, obj in tracked_objects:
             bbox = obj["bbox"]
-            payload["detections"].append({
+            det = {
                 "id": tid,
                 "class_name": obj["class_name"],
                 "confidence": round(float(obj["confidence"]), 4),
-                "center_x": round((bbox[0] + bbox[2]) / 2.0, 1),
-                "center_y": round((bbox[1] + bbox[3]) / 2.0, 1),
+                "center_x": round(float(bbox[0] + bbox[2]) / 2.0, 1),
+                "center_y": round(float(bbox[1] + bbox[3]) / 2.0, 1),
                 "bbox": [round(float(v), 1) for v in bbox],
-            })
+            }
+            # debug 模式附加每个物品的点云信息（点数 + 质心）
+            if self._debug_mode:
+                cloud = obj.get("cloud")
+                det["cloud_points"] = int(cloud.shape[0]) if cloud is not None else 0
+                if cloud is not None and cloud.shape[0] > 0:
+                    det["cloud_centroid"] = [
+                        round(float(v), 4)
+                        for v in np.mean(cloud[:, :3], axis=0)]
+            payload["detections"].append(det)
 
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
