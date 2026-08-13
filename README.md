@@ -127,7 +127,7 @@ ros2 launch realsense2_camera rs_launch.py \
 | 模式 | 输出 |
 | --- | --- |
 | `production`（默认） | 只输出识别标签 `/yolo/detections` 和按需点云 `/yolo/object_cloud`，无调试发布 |
-| `debug` | 在 production 基础上，额外发布所有识别物品的点云 `/yolo/debug_cloud`、RViz 标记 `/yolo/markers`，并默认打开同步/裁剪调试日志 |
+| `debug` | 在 production 基础上，额外发布所有识别物品的点云 `/yolo/debug_cloud`、RViz 标记 `/yolo/markers`，默认打开同步/裁剪调试日志，并自动启动 rviz2 窗口（加载 `debug.rviz_config`） |
 
 生产模式：
 
@@ -144,6 +144,10 @@ python scripts/inference/yolo_inference_node_cloud.py --ros-args \
 ```
 
 调试模式下 `/yolo/detections` 的 JSON 会额外带每个物品的 `cloud_points`（裁剪点数）和 `cloud_centroid`（点云质心），方便核对“所有物品的点云”是否裁到。
+
+debug 模式自动打开的 rviz2 会把输出写到 `debug.dir`（默认 `yolo_debug/rviz2.log`）；如果 rviz2 启动后异常退出（如显示连接失败），节点日志会直接打出它的报错末尾，便于排查窗口未出现的问题。
+
+注意：在 conda 环境下 `import cv2` 会把 `QT_QPA_PLATFORM_PLUGIN_PATH` 指向 cv2 自带的 Qt 插件，导致 rviz2 加载到不兼容的 xcb 插件、启动即崩溃（rc=-6）。节点拉起 rviz2 前会自动把该变量指回系统 Qt 插件目录（`/usr/lib/x86_64-linux-gnu/qt5/plugins`）并清理 LD_LIBRARY_PATH 中的 conda 路径。
 
 调参示例（参数按前缀分组，写法统一为 `-p 组名.参数:=值`）：
 
@@ -180,6 +184,8 @@ python scripts/inference/yolo_inference_node_cloud.py --ros-args \
 | `topic` | `.info` | `/Wrist_Camera/d435i/color/camera_info` | 相机内参话题（投影裁剪用） |
 | `debug` | `.cloud_hz` | `15.0` | `/yolo/debug_cloud` 最大发布频率（Hz），仅 debug 模式生效 |
 | `debug` | `.dir` | `/root/yolo/yolo_debug` | 调试输出目录，仅 debug 模式生效 |
+| `debug` | `.launch_rviz` | `true` | debug 模式下自动启动 rviz2 窗口；无显示器环境可设为 false |
+| `debug` | `.rviz_config` | `/root/yolo/rviz/debug.rviz` | rviz2 启动时加载的配置文件 |
 
 ### 话题与 QoS
 

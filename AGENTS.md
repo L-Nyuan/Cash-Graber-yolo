@@ -79,6 +79,7 @@ ros2 launch realsense2_camera rs_launch.py     pointcloud.enable:=true     align
 cd /root/yolo/scripts/inference
 
 # 当前主要调试版本：RealSense 彩色点云直取 + 时间同步
+# debug 模式会自动启动 rviz2（配置 /root/yolo/rviz/debug.rviz，可用 debug.launch_rviz 关闭）
 python yolo_inference_node_cloud.py --ros-args -p mode:=debug
 ```
 
@@ -165,6 +166,7 @@ python request_point_debug.py \
 
 - 直接从 RealSense 的 `/depth/color/points` 彩色点云裁剪。
 - 输出内容由 `mode` 统一控制：`production` 只发布 `/yolo/detections`（识别标签）和按需 `/yolo/object_cloud`；`debug` 额外发布所有物品点云 `/yolo/debug_cloud` 与 RViz 标记 `/yolo/markers`。
+- debug 模式自动启动 rviz2 窗口并加载 `/root/yolo/rviz/debug.rviz`；节点退出时自动关闭该窗口。无显示器时可 `-p debug.launch_rviz:=false`。
 - 用时间戳在彩色图和点云之间做最近邻匹配，超过 `sync.tolerance` 时默认不裁剪，避免旧 mask 套新点云。
 - 有 `sync.buffer_size` 缓冲、`sync.pending_wait` 短等待、离群点移除和 mask 腐蚀。
 - 点云缓存按 `track_id` 维护；未同步时清空旧缓存。
