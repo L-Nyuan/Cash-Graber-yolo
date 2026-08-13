@@ -116,9 +116,10 @@ python request_point_debug.py \
     │   ├── visualization_utils.py         调试图保存
     │   └── test_ros2_caramer.py           相机通信测试脚本
     ├── request_point_debug.py             点云请求/保存调试脚本
-    ├── yolo_train.py                      第一阶段 CEPB 训练脚本
-    ├── train_freeze.py                    第二阶段冻结 backbone 微调脚本
-    ├── train_final.py                     第三阶段解冻精细微调脚本
+    ├── train/
+    │   ├── yolo_train.py                  第一阶段 CEPB 训练脚本
+    │   ├── train_freeze.py                第二阶段冻结 backbone 微调脚本
+    │   └── train_final.py                 第三阶段解冻精细微调脚本
     ├── CEPB/                               CEPB 分割图转 YOLO 标签工具链
     └── Real_rec/                           真实数据采集与标签重映射工具链
 ```

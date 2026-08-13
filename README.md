@@ -19,9 +19,10 @@
 │   │   ├── visualization_utils.py         # 调试图保存
 │   │   └── mask_point_msg.py              # 未使用的旧版点云消息工具
 │   ├── request_point_debug.py     # 按需点云请求调试脚本
-│   ├── yolo_train.py              # 阶段 1：CEPB 基线训练
-│   ├── train_freeze.py            # 阶段 2：冻结 backbone 微调
-│   └── train_final.py             # 阶段 3：解冻全模型微调
+│   └── train/                     # 训练脚本
+│       ├── yolo_train.py          # 阶段 1：CEPB 基线训练
+│       ├── train_freeze.py        # 阶段 2：冻结 backbone 微调
+│       └── train_final.py         # 阶段 3：解冻全模型微调
 ├── dataset_real_remapped/          # 真实 + CEPB 混合 YOLO 数据集（images/labels + data.yaml）
 ├── dataset_temp/                   # 少量 CEPB 示例数据
 ├── result/
@@ -89,15 +90,15 @@ print('可视化已保存: /root/yolo/debug_test4501.jpg')
 "
 ```
 
-## 训练（`scripts/`）
+## 训练（`scripts/train/`）
 
 三阶段策略：
 
 | 脚本 | 阶段 | 说明 |
 | --- | --- | --- |
-| `yolo_train.py` | 1 | CEPB 数据上的 yolo11m-seg 基线训练 |
-| `train_freeze.py` | 2 | 冻结 backbone，在混合数据（真实 + CEPB）上微调 |
-| `train_final.py` | 3 | 解冻全模型、低学习率精细微调，产出 `result/final/` |
+| `scripts/train/yolo_train.py` | 1 | CEPB 数据上的 yolo11m-seg 基线训练 |
+| `scripts/train/train_freeze.py` | 2 | 冻结 backbone，在混合数据（真实 + CEPB）上微调 |
+| `scripts/train/train_final.py` | 3 | 解冻全模型、低学习率精细微调，产出 `result/final/` |
 
 ## 主推理节点：yolo_inference_node_cloud.py
 
