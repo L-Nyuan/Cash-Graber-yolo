@@ -365,8 +365,8 @@ class YOLOInferenceNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE)
         qos_cloud = QoSProfile(
-            depth=5,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE)
         qos_reliable = QoSProfile(
             depth=10, reliability=ReliabilityPolicy.RELIABLE)
