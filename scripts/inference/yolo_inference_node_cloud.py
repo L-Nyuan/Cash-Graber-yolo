@@ -623,6 +623,8 @@ class YOLOInferenceNode(Node):
         else:
             self._cloud_sync_skip_count += 1
 
+        delta_text = "None" if delta_ns is None else f"{delta_ns / 1e6:.2f}ms"
+
         # 没有同步点云时默认等待一小段时间，等待对应点云回调到达。
         # 超过 pending_max_wait 后仍不匹配，再丢弃该帧，不无限等待。
         if not matched and self._require_synced_cloud:
@@ -632,16 +634,24 @@ class YOLOInferenceNode(Node):
                     self._pending_color_stamp = color_stamp
                     self._pending_color_deadline = now_mono + self._pending_max_wait
                 self._sync_hold_count += 1
-                self.get_logger().debug(
-                    f"[sync] HOLD color={_stamp_text(color_stamp)} "
-                    f"cloud={_stamp_text(cloud_stamp)} "
-                    f"delta={None if delta_ns is None else delta_ns / 1e6:.2f}ms")
+                if not self._cloud_buffer:
+                    self.get_logger().debug(
+                        f"[sync] WAIT_CLOUD color={_stamp_text(color_stamp)} "
+                        f"cloud_buffer=0 cloud_msgs={self._cloud_msg_count} "
+                        f"wait={self._pending_max_wait:.3f}s")
+                else:
+                    self.get_logger().debug(
+                        f"[sync] HOLD color={_stamp_text(color_stamp)} "
+                        f"cloud={_stamp_text(cloud_stamp)} "
+                        f"delta={delta_text} buffer={len(self._cloud_buffer)} "
+                        f"cloud_msgs={self._cloud_msg_count}")
                 return
 
             self.get_logger().debug(
                 f"[sync] DROP color={_stamp_text(color_stamp)} "
                 f"cloud={_stamp_text(cloud_stamp)} "
-                f"delta={None if delta_ns is None else delta_ns / 1e6:.2f}ms")
+                f"delta={delta_text} buffer={len(self._cloud_buffer)} "
+                f"cloud_msgs={self._cloud_msg_count}")
 
         # 只有真正采用匹配点云时，才更新“最后一次裁剪使用的点云时间戳”。
         if matched and cloud_stamp is not None:
