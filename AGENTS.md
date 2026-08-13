@@ -7,7 +7,7 @@
 - 项目名称：Cash-Graber-yolo
 - 上级任务：2026 埃斯顿机器人抓取比赛，视觉感知部分
 - 本仓库职责：从 RealSense 相机图像出发，用 YOLO11-seg 做实例分割，追踪目标，并向下游 GraspNet 输出按需请求的物体彩色点云
-- 当前状态：视觉模型已训练完成；推理基本链路已打通；仍在修复若干小 bug 和整理脚本
+- 当前状态：视觉模型已训练完成；推理基本链路已打通；点云 QoS 匹配问题已修复（2026-08-13，见 `debug_log/`）；仍在修复若干小 bug 和整理脚本
 - 上游官方基础文档目录：`/root/ros2_ws/埃斯顿比赛`
 - 本仓库路径：`/root/yolo`
 
@@ -100,6 +100,7 @@ python request_point_debug.py \
 /root/yolo
 ├── AGENTS.md                       本文件
 ├── README.md                       旧版项目说明与单帧推理示例
+├── debug_log/                      调试记录（如点云 QoS 不匹配问题）
 ├── dataset_real_remapped/          真实数据 YOLO 数据集（train/val + data.yaml）
 ├── dataset_temp/                   少量 CEPB 示例数据
 ├── result/
@@ -173,6 +174,8 @@ python request_point_debug.py \
 
 关键参数可在运行时用 `--ros-args -p name:=value` 覆盖。
 
+点云订阅当前使用 `RELIABLE`。此前用 `BEST_EFFORT` 时，RealSense 发布端存在“无有效订阅者就不生成点云”的门控逻辑，导致 `cloud_msgs` 一直为 0、日志持续 `WAIT_CLOUD`；已改为与发布端一致的 `RELIABLE` 解决，完整排查过程见 `debug_log/2026-08-13_yolo_pointcloud_qos_debug.md`。
+
 ### 5.2 `yolo_inference_node.py`（旧版）
 
 订阅对齐深度图，用 `mask_to_pointcloud()` 反投影生成点云。功能可用，但当前调试重点已经转向 cloud 版；二者维护时要避免重复修同一处逻辑。
@@ -181,7 +184,7 @@ python request_point_debug.py \
 ## 6. 重要约定与易错点
 
 - **不要引入 `cv_bridge`**：当前环境 NumPy 版本与 cv_bridge 存在冲突，手动解码是有意为之。
-- **不要擅自改 QoS**：相机类订阅与 RealSense 发布端必须兼容；cloud 节点中点云订阅使用 `BEST_EFFORT`，其余检测/点云发布使用 `RELIABLE`。
+- **不要擅自改 QoS**：相机类订阅与 RealSense 发布端必须兼容。cloud 节点中 color、camera_info、pointcloud 三个订阅以及检测/点云发布均使用 `RELIABLE`；曾因点云订阅用 `BEST_EFFORT` 导致 RealSense 不发布点云，见 `debug_log/2026-08-13_yolo_pointcloud_qos_debug.md`。
 - **相机话题带命名空间**：当前默认是 `/Wrist_Camera/d435i/...`，不是无前缀的 `/d435i/...`；cloud 节点已参数化，改话题用 `cloud_topic`、`color_topic`、`info_topic`。
 - **YOLO mask 分辨率必须与点云/相机内参对齐**：cloud 版会先 `ensure_mask_resolution()` 再投影裁剪；旧版会打印形状不匹配错误。
 - **单线程执行器**：不要在回调里做长阻塞操作；节点已改成 50ms 定时器驱动，`_latest_*` 缓存并配合同步逻辑。
@@ -198,5 +201,6 @@ python request_point_debug.py \
 - `/root/ros2_ws/埃斯顿比赛/yolo/YOLO检测到点云提取-ROS2发布指南.md`
 - `/root/ros2_ws/埃斯顿比赛/yolo/YOLO分割到GraspNet点云输入流程.md`
 - `/root/ros2_ws/埃斯顿比赛/yolo/三阶段训练策略-CEPB到真实数据迁移.md`
+- `/root/yolo/debug_log/2026-08-13_yolo_pointcloud_qos_debug.md`（本地调试记录）
 
 这些文档是设计和调参背景，本 `AGENTS.md` 是执行时的快速入口。
