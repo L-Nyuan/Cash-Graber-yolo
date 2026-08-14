@@ -539,6 +539,38 @@ class YOLOInferenceNode(Node):
 
         return new_clouds
 
+    def _update_cloud_cache(self, tracks, new_clouds, cloud_xyz, matched):
+        """按同步结果更新点云缓存：无匹配时清空，有匹配时清理过期并写入。"""
+        if cloud_xyz is None and not matched:
+            # 清掉旧缓存，避免决策系统请求到上一姿态的点云。
+            self._cloud_cache.clear()
+        elif cloud_xyz is not None:
+            # 只有本帧实际产生过同步裁剪时才更新缓存，避免旧点云跨帧残留。
+            active_ids = {t.id for t in tracks}
+            self._cloud_cache.update(active_ids, new_clouds)
+
+    def _publish_debug_outputs(self, tracked_objects):
+        """debug 模式：发布合并点云与 RViz markers。"""
+        if not self._debug_mode:
+            return
+        clouds = [obj["cloud"] for _, obj in tracked_objects
+                  if obj.get("cloud") is not None and obj["cloud"].shape[0] >= 10]
+        if clouds and time.time() - self._last_debug_pub > self._debug_cloud_interval:
+            self._last_debug_pub = time.time()
+            stamp = self._last_crop_stamp
+            if stamp is None:
+                stamp = self.get_clock().now().to_msg()
+            header = Header(stamp=stamp, frame_id=self._last_crop_frame)
+            self.debug_cloud_pub.publish(
+                build_pointcloud2(np.vstack(clouds), header))
+
+        if _HAS_MARKER:
+            if hasattr(self, "marker_pub"):
+                now = self.get_clock().now().to_msg()
+                header = Header(stamp=now, frame_id=self._color_frame_id)
+                _publish_markers([obj for _, obj in tracked_objects],
+                                 header, publisher=self.marker_pub)
+
     def _inference_loop(self):
         frame = self._acquire_frame()
         if frame is None:
@@ -559,42 +591,16 @@ class YOLOInferenceNode(Node):
         tracked_objects, tracks, inference_ms = self._run_inference(
             image, camera_info)
 
-        # ── 3. 裁剪点云 ──────────────────────────────
-        if cloud_xyz is None and not matched:
-            # 清掉旧缓存，避免决策系统请求到上一姿态的点云。
-            self._cloud_cache.clear()
-
+        # ── 3+4. 裁剪点云 + 更新缓存 ─────────────────
         new_clouds = self._crop_tracked_clouds(
             tracked_objects, frame, camera_info)
+        self._update_cloud_cache(tracks, new_clouds, cloud_xyz, matched)
 
-        # 清理过期 + 写入新点云。
-        # 只有本帧实际产生过同步裁剪时才更新缓存，避免旧点云跨帧残留。
-        if cloud_xyz is not None:
-            active_ids = {t.id for t in tracks}
-            self._cloud_cache.update(active_ids, new_clouds)
-
-        # ── 4. 发布检测元数据 ─────────────────────────
+        # ── 5. 发布检测元数据 ─────────────────────────
         self._publish_detections(tracked_objects)
 
-        # ── 5. 调试点云（debug 模式：所有识别物品的点云）──
-        if self._debug_mode:
-            clouds = [obj["cloud"] for _, obj in tracked_objects
-                      if obj.get("cloud") is not None and obj["cloud"].shape[0] >= 10]
-            if clouds and time.time() - self._last_debug_pub > self._debug_cloud_interval:
-                self._last_debug_pub = time.time()
-                stamp = self._last_crop_stamp
-                if stamp is None:
-                    stamp = self.get_clock().now().to_msg()
-                header = Header(stamp=stamp, frame_id=self._last_crop_frame)
-                self.debug_cloud_pub.publish(
-                    build_pointcloud2(np.vstack(clouds), header))
-
-        if self._debug_mode and _HAS_MARKER:
-            if hasattr(self, "marker_pub"):
-                now = self.get_clock().now().to_msg()
-                header = Header(stamp=now, frame_id=self._color_frame_id)
-                _publish_markers([obj for _, obj in tracked_objects],
-                                 header, publisher=self.marker_pub)
+        # ── 6. debug 输出（合并点云 + RViz markers）───
+        self._publish_debug_outputs(tracked_objects)
 
         # ── 日志 ─────────────────────────────────────
         total_ms = (time.perf_counter() - t0) * 1000
