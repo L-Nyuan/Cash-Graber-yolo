@@ -429,8 +429,8 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 
 - [x] Phase 0：基线标签 + `test_cloud_utils.py`
 - [x] Phase 1：删除 `_box_iou`
-- [ ] Phase 2a：点云编解码与裁剪 → `cloud_utils.py`
-- [ ] Phase 2b：时间戳与 mask/SOR 工具 → `cloud_utils.py`
+- [x] Phase 2a：点云编解码与裁剪 → `cloud_utils.py`
+- [x] Phase 2b：时间戳与 mask/SOR 工具 → `cloud_utils.py`
 - [ ] Phase 3：参数 → `node_config.py`
 - [ ] Phase 4：rviz → `rviz_launcher.py`
 - [ ] Phase 5：同步 → `cloud_state.py`（`CloudSyncMatcher`）
@@ -447,7 +447,7 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 | 里程碑 | 行数 | commit |
 |---|---|---|
 | 拆分前（2026-08-13） | 1022 | `dcbd771` |
-| Phase 2 完成（纯函数搬出） | ≈ 830 | （待填） |
+| Phase 2 完成（纯函数搬出） | 节点 835 / cloud_utils 216 | `f8f4b58` + `d46caf7` |
 | Phase 6 完成（状态组件搬出） | ≈ 500 | （待填） |
 | Phase 7 完成（循环拆分） | ≈ 350 | （待填） |
 | 拆分完成 | 节点 ≈ 350 + 4 个模块 | （待填） |
