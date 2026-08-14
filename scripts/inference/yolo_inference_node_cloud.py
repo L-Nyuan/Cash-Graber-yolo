@@ -3,12 +3,6 @@
 YOLO11-seg ROS2 推理节点（RealSense 彩色点云直取版，带同步诊断）
 ============================================================
 
-相比原版主要改动：
-  1. 点云选择增加 sync_tolerance；找不到容差内的同步点云时，默认跳过本帧裁剪，
-     避免旧 segmentation 套到新点云上。
-  2. 清空点云缓存，防止决策系统请求到上一帧/上一姿态的旧点云。
-  3. 增加 sync/crop 调试日志，可直接用 ROS2 logger debug 级别输出。
-
 参数按前缀分组，命令行更规整：
   model.   模型（权重、尺寸、阈值）
   tracker. IoU 追踪器
@@ -485,20 +479,20 @@ class YOLOInferenceNode(Node):
 
         self._frame_count += 1
 
-        # ── 1+2. YOLO 推理 + IoU 追踪 ─────────────────
+        # ── 1. YOLO 推理 + IoU 追踪 ────────────────────
         t0 = time.perf_counter()
         tracked_objects, tracks, inference_ms = self._run_inference(
             image, camera_info)
 
-        # ── 3+4. 裁剪点云 + 更新缓存 ─────────────────
+        # ── 2. 裁剪点云 + 更新缓存 ─────────────────────
         new_clouds = self._crop_tracked_clouds(
             tracked_objects, frame, camera_info)
         self._update_cloud_cache(tracks, new_clouds, cloud_xyz, matched)
 
-        # ── 5. 发布检测元数据 ─────────────────────────
+        # ── 3. 发布检测元数据 ──────────────────────────
         self._publish_detections(tracked_objects)
 
-        # ── 6. debug 输出（合并点云 + RViz markers）───
+        # ── 4. debug 输出（合并点云 + RViz markers）────
         self._publish_debug_outputs(tracked_objects)
 
         # ── 日志 ─────────────────────────────────────

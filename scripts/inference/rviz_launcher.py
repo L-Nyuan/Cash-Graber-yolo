@@ -1,9 +1,8 @@
 # rviz_launcher.py —— debug 模式 rviz2 子进程生命周期管理
 #
-# 拆分计划 Phase 4（v2）：
-#   管理 rviz2 的启动、后台观察与退出清理；含 Qt 插件环境修复
-#   （conda/cv2 污染 QT_QPA_PLATFORM_PLUGIN_PATH 导致 rviz2 abort 的兼容处理）。
-#   生命周期与节点一致；watch 线程为 daemon，不阻塞节点退出。
+# 管理 rviz2 的启动、后台观察与退出清理；含 Qt 插件环境修复
+# （conda/cv2 污染 QT_QPA_PLATFORM_PLUGIN_PATH 导致 rviz2 abort 的兼容处理）。
+# 生命周期与节点一致；watch 线程为 daemon，不阻塞节点退出。
 
 import os
 import subprocess

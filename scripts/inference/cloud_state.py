@@ -1,8 +1,7 @@
 # cloud_state.py —— 节点状态组件
 #
-# 拆分计划 Phase 5/6（v2）：
-#   CloudSyncMatcher：彩色图/点云时间同步（缓冲 + 最近邻匹配 + 节流日志）
-#   CloudCache（Phase 6 加入）：track_id → 点云线程安全缓存
+# CloudSyncMatcher：彩色图/点云时间同步（缓冲 + 最近邻匹配 + pending 等待 + 节流日志）
+# CloudCache：track_id → 点云线程安全缓存
 # 生命周期与节点一致，由回调/定时器驱动；不创建 timer/线程。
 
 import time

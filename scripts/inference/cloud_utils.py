@@ -1,8 +1,7 @@
 # cloud_utils.py —— YOLO 节点纯函数工具
 #
-# 拆分计划 Phase 2（v2）：
-#   点云编解码、mask 缩放/腐蚀、点云裁剪、SOR、时间戳等无状态纯函数。
-#   不依赖 rclpy Node，可离线单测（见 test_cloud_utils.py）。
+# 点云编解码、mask 缩放/腐蚀、点云裁剪、SOR、时间戳等无状态纯函数。
+# 不依赖 rclpy Node，可离线单测（见 test_cloud_utils.py）。
 #
 # 注意：cv2 保持函数内延迟导入（避免 import 时污染 Qt 插件环境，
 # 见 rviz_launcher 相关的环境修复说明）。

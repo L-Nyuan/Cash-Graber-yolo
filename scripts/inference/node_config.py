@@ -1,8 +1,7 @@
 # node_config.py —— 节点参数声明与解析
 #
-# 拆分计划 Phase 3（v2）：
-#   集中 declare_parameter + get_parameter，节点 __init__ 只消费 NodeConfig。
-#   参数名与默认值必须与拆分前逐字一致（命令行 -p 覆盖方式保持不变）。
+# 集中 declare_parameter + get_parameter，节点 __init__ 只消费 NodeConfig。
+# 参数名与默认值以 declare_parameter 为准（命令行 -p 覆盖方式保持不变）。
 
 
 class NodeConfig:

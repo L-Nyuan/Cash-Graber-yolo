@@ -1,7 +1,7 @@
 # test_cloud_utils.py —— 点云工具离线冒烟测试
 #
-# Phase 0 创建：验证 build_pointcloud2 → realsense_cloud_to_xyzrgb 往返一致。
-# Phase 2 之后 cloud_utils.py 存在，自动切换从新模块导入；此前从节点模块导入。
+# 验证 build_pointcloud2 → realsense_cloud_to_xyzrgb 往返一致。
+# cloud_utils.py 存在时从新模块导入；否则回退从节点模块导入。
 import numpy as np
 
 try:
