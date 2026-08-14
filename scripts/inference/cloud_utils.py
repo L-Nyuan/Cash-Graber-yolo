@@ -178,3 +178,39 @@ def build_pointcloud2(xyz_rgb: np.ndarray, header: Header) -> PointCloud2:
     ]
     msg.data = buf.tobytes()
     return msg
+
+
+# ============================================================
+# 时间戳与点云后处理小工具
+# ============================================================
+
+def stamp_ns(s) -> int:
+    """ROS 时间戳 → 纳秒整数。"""
+    return int(s.sec) * 1_000_000_000 + int(s.nanosec)
+
+
+def stamp_text(s) -> str:
+    """把 ROS 时间转成 sec.nanosec 字符串，方便读日志。"""
+    if s is None:
+        return "None"
+    return f"{int(s.sec)}.{int(s.nanosec):09d}"
+
+
+def erode_mask(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """mask 腐蚀（3x3 核），返回 bool 掩码。"""
+    import cv2
+    return cv2.erode(
+        mask.astype(np.uint8),
+        np.ones((3, 3), np.uint8),
+        iterations=iterations) > 0
+
+
+def remove_outliers_sor(cloud: np.ndarray, o3d,
+                        nb_neighbors: int = 20,
+                        std_ratio: float = 1.0) -> np.ndarray:
+    """open3d 统计离群点移除，返回过滤后的 (N,6) 点云。"""
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(cloud[:, :3])
+    _, idx = pcd.remove_statistical_outlier(
+        nb_neighbors=nb_neighbors, std_ratio=std_ratio)
+    return cloud[np.asarray(idx)]

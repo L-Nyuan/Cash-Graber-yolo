@@ -48,7 +48,11 @@ from cloud_utils import (
     build_pointcloud2,
     crop_cloud_by_mask,
     ensure_mask_resolution,
+    erode_mask,
+    remove_outliers_sor,
     realsense_cloud_to_xyzrgb,
+    stamp_ns,
+    stamp_text,
 )
 from image_utils import ros_image_to_numpy
 from yolo_inference import YOLOSegInference
@@ -78,18 +82,6 @@ def _get_bbox(obj: dict) -> np.ndarray:
         ys, xs = np.where(mask)
         return np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=np.float32)
     return np.zeros(4, dtype=np.float32)
-
-
-def _stamp_ns(s) -> int:
-    """ROS 时间戳 → 纳秒整数。"""
-    return int(s.sec) * 1_000_000_000 + int(s.nanosec)
-
-
-def _stamp_text(s) -> str:
-    """把 ROS 时间转成 sec.nanosec 字符串，方便读日志。"""
-    if s is None:
-        return "None"
-    return f"{int(s.sec)}.{int(s.nanosec):09d}"
 
 
 # ============================================================
@@ -426,7 +418,7 @@ class YOLOInferenceNode(Node):
 
             if self._sync_debug and self._cloud_msg_count <= 3:
                 self.get_logger().info(
-                    f"[cloud_cb] stamp={_stamp_text(msg.header.stamp)} "
+                    f"[cloud_cb] stamp={stamp_text(msg.header.stamp)} "
                     f"frame={msg.header.frame_id or '(empty)'} "
                     f"points={len(xyz)}"
                 )
@@ -450,11 +442,11 @@ class YOLOInferenceNode(Node):
                     throttle_duration_sec=1.0)
             return (None, None, None, self._color_frame_id, None, False)
 
-        t_img = _stamp_ns(color_stamp)
+        t_img = stamp_ns(color_stamp)
         best_idx = -1
         best_d = float("inf")
         for i, (st, _fr, _xyz, _rgb) in enumerate(self._cloud_buffer):
-            d = abs(_stamp_ns(st) - t_img)
+            d = abs(stamp_ns(st) - t_img)
             if d < best_d:
                 best_d = d
                 best_idx = i
@@ -478,14 +470,14 @@ class YOLOInferenceNode(Node):
 
         if delta_ns is None:
             self.get_logger().warn(
-                f"[sync] color={_stamp_text(color_stamp)} cloud={_stamp_text(cloud_stamp)} "
+                f"[sync] color={stamp_text(color_stamp)} cloud={stamp_text(cloud_stamp)} "
                 f"delta=None buffer={cloud_n} match={matched}")
             return
 
         delta_ms = delta_ns / 1_000_000.0
         self.get_logger().info(
-            f"[sync] color={_stamp_text(color_stamp)} "
-            f"cloud={_stamp_text(cloud_stamp)} "
+            f"[sync] color={stamp_text(color_stamp)} "
+            f"cloud={stamp_text(cloud_stamp)} "
             f"delta={delta_ms:.2f}ms buffer={cloud_n} match={matched}"
         )
 
@@ -530,7 +522,7 @@ class YOLOInferenceNode(Node):
         # 而不是把这一帧直接丢掉，从而减少 RViz 中偶发的一拍冻结。
         if self._pending_color is not None and now_mono > self._pending_color_deadline:
             self.get_logger().debug(
-                f"[sync] pending color {_stamp_text(self._pending_color_stamp)} "
+                f"[sync] pending color {stamp_text(self._pending_color_stamp)} "
                 "超时，丢弃该帧")
             self._pending_color = None
             self._pending_color_stamp = None
@@ -544,7 +536,7 @@ class YOLOInferenceNode(Node):
                 use_pending = True
             else:
                 use_pending = (
-                    _stamp_ns(self._pending_color_stamp) <= _stamp_ns(color_stamp))
+                    stamp_ns(self._pending_color_stamp) <= stamp_ns(color_stamp))
 
         if use_pending:
             image = self._pending_color
@@ -583,20 +575,20 @@ class YOLOInferenceNode(Node):
                 self._sync_hold_count += 1
                 if not self._cloud_buffer:
                     self.get_logger().debug(
-                        f"[sync] WAIT_CLOUD color={_stamp_text(color_stamp)} "
+                        f"[sync] WAIT_CLOUD color={stamp_text(color_stamp)} "
                         f"cloud_buffer=0 cloud_msgs={self._cloud_msg_count} "
                         f"wait={self._pending_max_wait:.3f}s")
                 else:
                     self.get_logger().debug(
-                        f"[sync] HOLD color={_stamp_text(color_stamp)} "
-                        f"cloud={_stamp_text(cloud_stamp)} "
+                        f"[sync] HOLD color={stamp_text(color_stamp)} "
+                        f"cloud={stamp_text(cloud_stamp)} "
                         f"delta={delta_text} buffer={len(self._cloud_buffer)} "
                         f"cloud_msgs={self._cloud_msg_count}")
                 return
 
             self.get_logger().debug(
-                f"[sync] DROP color={_stamp_text(color_stamp)} "
-                f"cloud={_stamp_text(cloud_stamp)} "
+                f"[sync] DROP color={stamp_text(color_stamp)} "
+                f"cloud={stamp_text(cloud_stamp)} "
                 f"delta={delta_text} buffer={len(self._cloud_buffer)} "
                 f"cloud_msgs={self._cloud_msg_count}")
 
@@ -687,11 +679,7 @@ class YOLOInferenceNode(Node):
 
                     mask = ensure_mask_resolution(mask, target_hw)
                     if self._mask_erode > 0:
-                        import cv2
-                        mask = cv2.erode(
-                            mask.astype(np.uint8),
-                            np.ones((3, 3), np.uint8),
-                            iterations=self._mask_erode) > 0
+                        mask = erode_mask(mask, self._mask_erode)
 
                     mask_count_after = int(np.count_nonzero(mask))
                     cloud = crop_cloud_by_mask(
@@ -699,11 +687,8 @@ class YOLOInferenceNode(Node):
                     crop_count = cloud.shape[0]
 
                     if self._o3d is not None and cloud.shape[0] > 50:
-                        pcd = self._o3d.geometry.PointCloud()
-                        pcd.points = self._o3d.utility.Vector3dVector(cloud[:, :3])
-                        _, idx = pcd.remove_statistical_outlier(
-                            nb_neighbors=20, std_ratio=1.0)
-                        cloud = cloud[np.asarray(idx)]
+                        cloud = remove_outliers_sor(
+                            cloud, self._o3d, nb_neighbors=20, std_ratio=1.0)
 
                     if self._sync_debug:
                         z_mean = float(np.mean(cloud[:, 2])) if cloud.shape[0] else 0.0
