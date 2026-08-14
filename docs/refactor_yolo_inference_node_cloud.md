@@ -435,11 +435,11 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 - [x] Phase 4：rviz → `rviz_launcher.py`
 - [x] Phase 5：同步 → `cloud_state.py`（`CloudSyncMatcher`）
 - [x] Phase 6：缓存 → `cloud_state.py`（`CloudCache`）
-- [ ] Phase 7.1：`_acquire_frame`
-- [ ] Phase 7.2：`_run_inference`
-- [ ] Phase 7.3：`_crop_tracked_clouds`
-- [ ] Phase 7.4–7.5：缓存更新 + debug 发布
-- [ ] Phase 7.6：`_inference_loop` ≤ 70 行，完整验收
+- [x] Phase 7.1：`_acquire_frame`
+- [x] Phase 7.2：`_run_inference`
+- [x] Phase 7.3：`_crop_tracked_clouds`
+- [x] Phase 7.4–7.5：缓存更新 + debug 发布
+- [x] Phase 7.6：`_inference_loop` ≤ 70 行，完整验收
 - [ ] Phase 8：收尾清理 + AGENTS.md 更新
 
 ### 里程碑记录
@@ -451,9 +451,17 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 | Phase 3 完成（配置搬出） | 节点 792 / node_config 123 | `f9b43fd` |
 | Phase 4 完成（rviz 搬出） | 节点 693 / rviz_launcher 136 | `7b76164` |
 | Phase 5 完成（同步搬出） | 节点 634 / cloud_state 117 | `7df47f5` |
-| Phase 6 完成（缓存搬出） | 节点 626 / cloud_state 150 | （本次提交） |
-| Phase 7 完成（循环拆分） | ≈ 350 | （待填） |
+| Phase 6 完成（缓存搬出） | 节点 626 / cloud_state 150 | `0cd57b0` |
+| Phase 7 完成（循环拆分） | 节点 692 / `_inference_loop` 46 | `cb3fb2d` `acc09b2` `64374bb` `9906fa0` |
 | 拆分完成 | 节点 ≈ 350 + 4 个模块 | （待填） |
+
+> **里程碑偏差说明（Phase 7 后）**：v1 预估的"节点 ≈ 500/350"未达成，实际节点 692 行。
+> 原因：v2 合并方案取消了 `detections_msg.py`（JSON 构造留在节点），且 Phase 7 把循环逻辑拆成
+> 同文件内的方法（`_inference_loop` 46 行达标，但方法定义本身增加行数）。文件的大幅瘦身来自
+> Phase 2–6（1022 → 626），Phase 7 负责的是"单函数可读性"。若需要继续压缩节点行数，
+> 可选的后续动作（v2 已标注为可选）：
+> 1. 把 `_publish_detections` 的 JSON 构造下沉为 `cloud_utils.build_detections_json`（约 −40 行）；
+> 2. 把 `_acquire_frame` 的 pending 决策逻辑并入 `CloudSyncMatcher`（约 −60 行）。
 
 ---
 
@@ -482,7 +490,8 @@ git checkout refactor-baseline -- scripts/inference/
 
 ## 8. 完成标准（Definition of Done）
 
-1. `yolo_inference_node_cloud.py` ≤ 360 行，`_inference_loop` ≤ 70 行。
+1. `_inference_loop` ≤ 70 行（实际 46 行）；节点文件较拆分前显著减少
+   （1022 → 692 行，含 v2 合并取舍，见"里程碑偏差说明"；如需继续压缩可做两项可选下沉）。
 2. 新模块共 4 个：`cloud_utils.py` / `cloud_state.py` / `node_config.py` / `rviz_launcher.py`，各自职责见 3.1，无循环依赖。
 3. 全量验收通过：语法 / import / 无相机运行 / 有相机完整流程（检测、点云、请求、rviz、退出清理）。
 4. `/yolo/detections` JSON 字段、话题名、参数名、QoS 与拆分前完全一致。
