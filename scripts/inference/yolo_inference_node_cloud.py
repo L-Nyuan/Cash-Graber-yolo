@@ -446,6 +446,41 @@ class YOLOInferenceNode(Node):
             cloud_stamp=cloud_stamp, cloud_frame=cloud_frame,
             matched=matched)
 
+    def _run_inference(self, image, camera_info):
+        """YOLO 推理 + IoU 追踪，组装带 track_id 与空点云占位的目标列表。
+
+        Returns:
+            (tracked_objects, tracks, inference_ms)
+        """
+        target_hw = (int(camera_info.height), int(camera_info.width))
+        result = self.yolo.predict(image)
+        inference_ms = result["inference_time_ms"]
+        self._total_inference_ms += inference_ms
+        objects = result.get("objects", [])
+
+        if objects and not hasattr(self, '_mask_shape_warned'):
+            self._mask_shape_warned = True
+            m0 = objects[0].get("mask")
+            if m0 is not None:
+                self.get_logger().info(
+                    f"[诊断] YOLO mask={m0.shape} → 缩放到 {target_hw} 再投影裁剪")
+
+        # ── IoU 追踪 ─────────────────────────────────
+        dets = [{"bbox": _get_bbox(o), "class_name": o["class_name"],
+                 "confidence": o["confidence"]} for o in objects]
+        tracks = self._tracker.update(dets)
+
+        tracked_objects: List[Tuple[int, dict]] = []
+        for t in tracks:
+            if t.det_idx < 0:
+                continue
+            obj = objects[t.det_idx]
+            obj["track_id"] = t.id
+            obj["cloud"] = np.empty((0, 6), dtype=np.float32)
+            tracked_objects.append((t.id, obj))
+
+        return tracked_objects, tracks, inference_ms
+
     def _inference_loop(self):
         frame = self._acquire_frame()
         if frame is None:
@@ -461,29 +496,13 @@ class YOLOInferenceNode(Node):
 
         self._frame_count += 1
 
-        # ── 1. YOLO 推理 ──────────────────────────────
+        # ── 1+2. YOLO 推理 + IoU 追踪 ─────────────────
         t0 = time.perf_counter()
-        result = self.yolo.predict(image)
-        inference_ms = result["inference_time_ms"]
-        self._total_inference_ms += inference_ms
-        objects = result.get("objects", [])
-
-        target_hw = (int(camera_info.height), int(camera_info.width))
-
-        if objects and not hasattr(self, '_mask_shape_warned'):
-            self._mask_shape_warned = True
-            m0 = objects[0].get("mask")
-            if m0 is not None:
-                self.get_logger().info(
-                    f"[诊断] YOLO mask={m0.shape} → 缩放到 {target_hw} 再投影裁剪")
-
-        # ── 2. IoU 追踪 ──────────────────────────────
-        dets = [{"bbox": _get_bbox(o), "class_name": o["class_name"],
-                 "confidence": o["confidence"]} for o in objects]
-        tracks = self._tracker.update(dets)
+        tracked_objects, tracks, inference_ms = self._run_inference(
+            image, camera_info)
 
         # ── 3. 裁剪点云 ──────────────────────────────
-        tracked_objects: List[Tuple[int, dict]] = []
+        target_hw = (int(camera_info.height), int(camera_info.width))
         new_clouds: Dict[int, np.ndarray] = {}
 
         if cloud_xyz is None and matched:
@@ -495,12 +514,7 @@ class YOLOInferenceNode(Node):
             # 清掉旧缓存，避免决策系统请求到上一姿态的点云。
             self._cloud_cache.clear()
 
-        for t in tracks:
-            if t.det_idx < 0:
-                continue
-            obj = objects[t.det_idx]
-            obj["track_id"] = t.id
-
+        for tid, obj in tracked_objects:
             mask = obj.get("mask")
             cloud = np.empty((0, 6), dtype=np.float32)
 
@@ -528,7 +542,7 @@ class YOLOInferenceNode(Node):
                             float(np.mean(cloud[:, 3 + i])) if cloud.shape[0] else 0.0
                             for i in range(3))
                         self.get_logger().debug(
-                            f"[crop] tid={t.id} {obj['class_name']} "
+                            f"[crop] tid={tid} {obj['class_name']} "
                             f"mask={mask_shape_before}->{mask.shape} "
                             f"px={mask_count_before}->{mask_count_after} "
                             f"src_cloud={len(cloud_xyz)} crop={crop_count} "
@@ -540,9 +554,8 @@ class YOLOInferenceNode(Node):
                     cloud = np.empty((0, 6), dtype=np.float32)
 
             obj["cloud"] = cloud
-            tracked_objects.append((t.id, obj))
             if cloud.shape[0] >= 10:
-                new_clouds[t.id] = cloud
+                new_clouds[tid] = cloud
 
         # 清理过期 + 写入新点云。
         # 只有本帧实际产生过同步裁剪时才更新缓存，避免旧点云跨帧残留。
