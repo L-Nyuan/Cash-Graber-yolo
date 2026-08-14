@@ -5,6 +5,7 @@
 
 创建日期：2026-08-13
 修订记录：
+- **v3（2026-08-14）**：Phase 7-8 完成；pending 决策并入 `CloudSyncMatcher`（节点 591 行）；JSON 构造按用户决定保留在节点；删除 `mask_point_msg.py`。
 - **v2（2026-08-14）**：按用户意见合并子模块，新模块从 8 个减为 4 个；分类原则改为"按职责域合并，不按函数粒度拆分"。
 - v1（2026-08-13）：初版细粒度拆分方案。
 
@@ -101,9 +102,9 @@
 
 ```text
 scripts/inference/
-├── yolo_inference_node_cloud.py   # 入口节点：配置加载 + 订阅发布 + 推理编排（目标 ≈ 350 行）
+├── yolo_inference_node_cloud.py   # 入口节点：配置加载 + 订阅发布 + 推理编排（实际 591 行）
 ├── cloud_utils.py                 # 纯函数：点云解码/编码、mask 缩放腐蚀、裁剪、SOR、时间戳（≈ 230 行）
-├── cloud_state.py                 # 节点状态组件：CloudSyncMatcher（时间同步）+ CloudCache（点云缓存）（≈ 150 行）
+├── cloud_state.py                 # 节点状态组件：CloudSyncMatcher（同步+pending）+ CloudCache（≈ 293 行）
 ├── node_config.py                 # 全部参数声明与解析（NodeConfig）（≈ 110 行）
 ├── rviz_launcher.py               # debug 模式 rviz2 启动/监控/退出（RvizLauncher）（≈ 110 行）
 ├── yolo_inference.py              # 已有：可新增 extract_bbox
@@ -440,7 +441,7 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 - [x] Phase 7.3：`_crop_tracked_clouds`
 - [x] Phase 7.4–7.5：缓存更新 + debug 发布
 - [x] Phase 7.6：`_inference_loop` ≤ 70 行，完整验收
-- [ ] Phase 8：收尾清理 + AGENTS.md 更新
+- [x] Phase 8：收尾清理 + AGENTS.md 更新
 
 ### 里程碑记录
 
@@ -453,15 +454,15 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 | Phase 5 完成（同步搬出） | 节点 634 / cloud_state 117 | `7df47f5` |
 | Phase 6 完成（缓存搬出） | 节点 626 / cloud_state 150 | `0cd57b0` |
 | Phase 7 完成（循环拆分） | 节点 692 / `_inference_loop` 46 | `cb3fb2d` `acc09b2` `64374bb` `9906fa0` |
-| 拆分完成 | 节点 ≈ 350 + 4 个模块 | （待填） |
+| pending 并入 matcher（可选②） | 节点 591 / cloud_state 293 | `7e97e9a` |
+| 拆分完成 | 节点 591 + 4 个新模块（cloud_utils/cloud_state/node_config/rviz_launcher） | `fe375b9` |
 
 > **里程碑偏差说明（Phase 7 后）**：v1 预估的"节点 ≈ 500/350"未达成，实际节点 692 行。
 > 原因：v2 合并方案取消了 `detections_msg.py`（JSON 构造留在节点），且 Phase 7 把循环逻辑拆成
 > 同文件内的方法（`_inference_loop` 46 行达标，但方法定义本身增加行数）。文件的大幅瘦身来自
-> Phase 2–6（1022 → 626），Phase 7 负责的是"单函数可读性"。若需要继续压缩节点行数，
-> 可选的后续动作（v2 已标注为可选）：
-> 1. 把 `_publish_detections` 的 JSON 构造下沉为 `cloud_utils.build_detections_json`（约 −40 行）；
-> 2. 把 `_acquire_frame` 的 pending 决策逻辑并入 `CloudSyncMatcher`（约 −60 行）。
+> Phase 2–6（1022 → 626），Phase 7 负责的是"单函数可读性"。
+> 两项可选动作的最终处理：② pending 决策已并入 `CloudSyncMatcher`（`7e97e9a`，节点 692 → 591）；
+> ① JSON 构造按用户决定保留在节点（不搬）。
 
 ---
 
@@ -491,7 +492,7 @@ git checkout refactor-baseline -- scripts/inference/
 ## 8. 完成标准（Definition of Done）
 
 1. `_inference_loop` ≤ 70 行（实际 46 行）；节点文件较拆分前显著减少
-   （1022 → 692 行，含 v2 合并取舍，见"里程碑偏差说明"；如需继续压缩可做两项可选下沉）。
+   （1022 → 591 行，含 v2 合并取舍与 pending 并入，见"里程碑偏差说明"）。
 2. 新模块共 4 个：`cloud_utils.py` / `cloud_state.py` / `node_config.py` / `rviz_launcher.py`，各自职责见 3.1，无循环依赖。
 3. 全量验收通过：语法 / import / 无相机运行 / 有相机完整流程（检测、点云、请求、rviz、退出清理）。
 4. `/yolo/detections` JSON 字段、话题名、参数名、QoS 与拆分前完全一致。
