@@ -12,12 +12,16 @@
 │   ├── Real_rec/                   # 真实数据采集与处理
 │   ├── inference/                  # ROS2 推理节点与配套工具
 │   │   ├── yolo_inference_node_cloud.py   # 主入口节点（见下文）
+│   │   ├── node_config.py                 # 参数声明与解析
+│   │   ├── cloud_utils.py                 # 点云/时间戳纯函数工具
+│   │   ├── cloud_state.py                 # 时间同步 + 点云缓存
+│   │   ├── rviz_launcher.py               # debug 模式 rviz2 生命周期
 │   │   ├── yolo_inference.py              # YOLO 推理封装
 │   │   ├── object_tracker.py              # IoU 多目标追踪
 │   │   ├── image_utils.py                 # 不依赖 cv_bridge 的 ROS Image 解码
 │   │   ├── marker_rviz.py                 # RViz 标记发布
 │   │   ├── visualization_utils.py         # 调试图保存
-│   │   └── mask_point_msg.py              # 未使用的旧版点云消息工具
+│   │   └── test_cloud_utils.py            # 点云工具离线测试
 │   ├── request_point_debug.py     # 按需点云请求调试脚本
 │   └── train/                     # 训练脚本
 │       ├── yolo_train.py          # 阶段 1：CEPB 基线训练

@@ -108,13 +108,17 @@ python request_point_debug.py \
 ├── test_output/                    CEPB 标注转换测试输出
 └── scripts/
     ├── inference/
-    │   ├── yolo_inference_node_cloud.py   当前主要节点：彩色点云直取+同步
+    │   ├── yolo_inference_node_cloud.py   当前主要节点：彩色点云直取+同步（入口编排）
+    │   ├── node_config.py                 参数声明与解析（NodeConfig）
+    │   ├── cloud_utils.py                 点云编解码/mask/裁剪/SOR/时间戳纯函数
+    │   ├── cloud_state.py                 时间同步（CloudSyncMatcher）与点云缓存（CloudCache）
+    │   ├── rviz_launcher.py               debug 模式 rviz2 生命周期
     │   ├── yolo_inference.py              YOLO 推理封装
     │   ├── object_tracker.py              IoU 多目标追踪
     │   ├── image_utils.py                 不依赖 cv_bridge 的 ROS Image 解码
     │   ├── marker_rviz.py                 RViz marker
-    │   ├── mask_point_msg.py              未使用的旧版点云消息工具（保留待清理）
     │   ├── visualization_utils.py         调试图保存
+    │   ├── test_cloud_utils.py            点云工具离线冒烟测试
     │   └── test_ros2_caramer.py           相机通信测试脚本
     ├── request_point_debug.py             点云请求/保存调试脚本
     ├── train/
