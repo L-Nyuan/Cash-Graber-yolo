@@ -241,17 +241,6 @@ def _get_bbox(obj: dict) -> np.ndarray:
     return np.zeros(4, dtype=np.float32)
 
 
-def _box_iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
-    """两矩形框 IoU。"""
-    x1, y1 = max(box_a[0], box_b[0]), max(box_a[1], box_b[1])
-    x2, y2 = min(box_a[2], box_b[2]), min(box_a[3], box_b[3])
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
-    union = area_a + area_b - inter
-    return float(inter / union) if union > 0 else 0.0
-
-
 def _stamp_ns(s) -> int:
     """ROS 时间戳 → 纳秒整数。"""
     return int(s.sec) * 1_000_000_000 + int(s.nanosec)

@@ -428,7 +428,7 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 ### 勾选表（v2）
 
 - [x] Phase 0：基线标签 + `test_cloud_utils.py`
-- [ ] Phase 1：删除 `_box_iou`
+- [x] Phase 1：删除 `_box_iou`
 - [ ] Phase 2a：点云编解码与裁剪 → `cloud_utils.py`
 - [ ] Phase 2b：时间戳与 mask/SOR 工具 → `cloud_utils.py`
 - [ ] Phase 3：参数 → `node_config.py`
