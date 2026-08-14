@@ -434,7 +434,7 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 - [x] Phase 3：参数 → `node_config.py`
 - [x] Phase 4：rviz → `rviz_launcher.py`
 - [x] Phase 5：同步 → `cloud_state.py`（`CloudSyncMatcher`）
-- [ ] Phase 6：缓存 → `cloud_state.py`（`CloudCache`）
+- [x] Phase 6：缓存 → `cloud_state.py`（`CloudCache`）
 - [ ] Phase 7.1：`_acquire_frame`
 - [ ] Phase 7.2：`_run_inference`
 - [ ] Phase 7.3：`_crop_tracked_clouds`
@@ -450,8 +450,8 @@ python request_point_debug.py --ros-args -p track_id:=1 -p save_cloud:=true -p s
 | Phase 2 完成（纯函数搬出） | 节点 835 / cloud_utils 216 | `f8f4b58` + `d46caf7` |
 | Phase 3 完成（配置搬出） | 节点 792 / node_config 123 | `f9b43fd` |
 | Phase 4 完成（rviz 搬出） | 节点 693 / rviz_launcher 136 | `7b76164` |
-| Phase 5 完成（同步搬出） | 节点 634 / cloud_state 117 | （本次提交） |
-| Phase 6 完成（状态组件搬出） | ≈ 500 | （待填） |
+| Phase 5 完成（同步搬出） | 节点 634 / cloud_state 117 | `7df47f5` |
+| Phase 6 完成（缓存搬出） | 节点 626 / cloud_state 150 | （本次提交） |
 | Phase 7 完成（循环拆分） | ≈ 350 | （待填） |
 | 拆分完成 | 节点 ≈ 350 + 4 个模块 | （待填） |
 

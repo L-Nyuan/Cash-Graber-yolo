@@ -33,7 +33,6 @@ import json
 import sys
 import time
 import os
-import threading
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -54,7 +53,7 @@ from cloud_utils import (
     stamp_text,
 )
 from node_config import NodeConfig
-from cloud_state import CloudSyncMatcher
+from cloud_state import CloudCache, CloudSyncMatcher
 from image_utils import ros_image_to_numpy
 from yolo_inference import YOLOSegInference
 from object_tracker import ObjectTracker
@@ -152,8 +151,7 @@ class YOLOInferenceNode(Node):
         )
 
         # ── 点云缓存：track_id → (N,6) xyz+rgb ─────────
-        self._cloud_cache: Dict[int, np.ndarray] = {}
-        self._cloud_lock = threading.Lock()
+        self._cloud_cache = CloudCache()
 
         # ── QoS ──────────────────────────────────────────
         qos_sensor = QoSProfile(
@@ -284,13 +282,12 @@ class YOLOInferenceNode(Node):
 
     def _on_request_cloud(self, msg: Int32):
         object_id = msg.data
-        with self._cloud_lock:
-            cloud = self._cloud_cache.get(object_id)
+        cloud = self._cloud_cache.get(object_id)
 
         if cloud is None or cloud.shape[0] < 10:
             self.get_logger().warn(
                 f"[Request] ID={object_id} 无有效点云 "
-                f"(缓存: {list(self._cloud_cache.keys())})")
+                f"(缓存: {self._cloud_cache.keys()})")
             stamp = self._last_crop_stamp or self.get_clock().now().to_msg()
             header = Header(stamp=stamp, frame_id=self._last_crop_frame)
             empty = build_pointcloud2(np.empty((0, 6), dtype=np.float32), header)
@@ -459,8 +456,7 @@ class YOLOInferenceNode(Node):
 
         if cloud_xyz is None and not matched:
             # 清掉旧缓存，避免决策系统请求到上一姿态的点云。
-            with self._cloud_lock:
-                self._cloud_cache.clear()
+            self._cloud_cache.clear()
 
         for t in tracks:
             if t.det_idx < 0:
@@ -515,11 +511,7 @@ class YOLOInferenceNode(Node):
         # 只有本帧实际产生过同步裁剪时才更新缓存，避免旧点云跨帧残留。
         if cloud_xyz is not None:
             active_ids = {t.id for t in tracks}
-            with self._cloud_lock:
-                for k in list(self._cloud_cache):
-                    if k not in active_ids:
-                        del self._cloud_cache[k]
-                self._cloud_cache.update(new_clouds)
+            self._cloud_cache.update(active_ids, new_clouds)
 
         # ── 4. 发布检测元数据 ─────────────────────────
         self._publish_detections(tracked_objects)

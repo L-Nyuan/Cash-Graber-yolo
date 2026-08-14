@@ -6,8 +6,9 @@
 # 生命周期与节点一致，由回调/定时器驱动；不创建 timer/线程。
 
 import time
+import threading
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -115,3 +116,35 @@ class CloudSyncMatcher:
             f"cloud={stamp_text(cloud_stamp)} "
             f"delta={delta_ms:.2f}ms buffer={cloud_n} match={matched}"
         )
+
+
+class CloudCache:
+    """track_id → 点云 (N,6) 的线程安全缓存。"""
+
+    def __init__(self):
+        self._cache: Dict[int, np.ndarray] = {}
+        self._lock = threading.Lock()
+
+    def get(self, track_id: int) -> Optional[np.ndarray]:
+        with self._lock:
+            return self._cache.get(track_id)
+
+    def update(self, active_ids, new_clouds: Dict[int, np.ndarray]):
+        """清理不在 active_ids 的旧条目，并写入本帧新点云。"""
+        with self._lock:
+            for k in list(self._cache):
+                if k not in active_ids:
+                    del self._cache[k]
+            self._cache.update(new_clouds)
+
+    def clear(self):
+        with self._lock:
+            self._cache.clear()
+
+    def keys(self) -> List[int]:
+        with self._lock:
+            return list(self._cache.keys())
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._cache)
