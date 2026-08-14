@@ -33,6 +33,7 @@ import json
 import sys
 import time
 import os
+from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -83,6 +84,19 @@ def _get_bbox(obj: dict) -> np.ndarray:
         ys, xs = np.where(mask)
         return np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=np.float32)
     return np.zeros(4, dtype=np.float32)
+
+
+@dataclass
+class FrameData:
+    """_acquire_frame 返回的一帧输入（含点云时间同步结果）。"""
+
+    image: np.ndarray
+    color_stamp: object
+    cloud_xyz: Optional[np.ndarray]
+    cloud_rgb: Optional[np.ndarray]
+    cloud_stamp: object
+    cloud_frame: str
+    matched: bool
 
 
 # ============================================================
@@ -306,11 +320,16 @@ class YOLOInferenceNode(Node):
     # 推理循环
     # ============================================================
 
-    def _inference_loop(self):
+    def _acquire_frame(self) -> Optional[FrameData]:
+        """取一帧可处理的彩色图并完成点云时间同步决策。
+
+        Returns:
+            FrameData 或 None（无相机信息 / 无新帧 / 等待点云 HOLD 中）。
+        """
         now_mono = time.perf_counter()
         camera_info = self._latest_info
         if camera_info is None:
-            return
+            return None
 
         # 如果上一帧暂时没等到同步点云，先让 pending 帧继续匹配，
         # 而不是把这一帧直接丢掉，从而减少 RViz 中偶发的一拍冻结。
@@ -341,7 +360,7 @@ class YOLOInferenceNode(Node):
             self._pending_color_stamp = None
             self._latest_color = None
         else:
-            return
+            return None
 
         # 点云时间同步：没有容差内匹配时，宁可本帧不裁点云，
         # 也不要把旧 mask 套到新点云上。
@@ -380,7 +399,7 @@ class YOLOInferenceNode(Node):
                         f"cloud={stamp_text(cloud_stamp)} "
                         f"delta={delta_text} buffer={len(self._sync)} "
                         f"cloud_msgs={self._sync.msgs}")
-                return
+                return None
 
             self.get_logger().debug(
                 f"[sync] DROP color={stamp_text(color_stamp)} "
@@ -421,7 +440,25 @@ class YOLOInferenceNode(Node):
                     "[诊断] 尚未收到/未匹配 RealSense 点云！请确认相机已启动，"
                     "且命令行带 pointcloud.enable:=true；若已启动，查看 sync 日志。")
 
-        color_for_cloud = image.copy()
+        return FrameData(
+            image=image, color_stamp=color_stamp,
+            cloud_xyz=cloud_xyz, cloud_rgb=cloud_rgb,
+            cloud_stamp=cloud_stamp, cloud_frame=cloud_frame,
+            matched=matched)
+
+    def _inference_loop(self):
+        frame = self._acquire_frame()
+        if frame is None:
+            return
+
+        image = frame.image
+        cloud_xyz = frame.cloud_xyz
+        cloud_rgb = frame.cloud_rgb
+        cloud_stamp = frame.cloud_stamp
+        cloud_frame = frame.cloud_frame
+        matched = frame.matched
+        camera_info = self._latest_info
+
         self._frame_count += 1
 
         # ── 1. YOLO 推理 ──────────────────────────────
