@@ -481,38 +481,18 @@ class YOLOInferenceNode(Node):
 
         return tracked_objects, tracks, inference_ms
 
-    def _inference_loop(self):
-        frame = self._acquire_frame()
-        if frame is None:
-            return
-
-        image = frame.image
+    def _crop_tracked_clouds(self, tracked_objects, frame,
+                             camera_info) -> Dict[int, np.ndarray]:
+        """逐目标裁剪点云（mask 缩放/腐蚀/裁剪/SOR），返回本帧新点云。"""
         cloud_xyz = frame.cloud_xyz
         cloud_rgb = frame.cloud_rgb
-        cloud_stamp = frame.cloud_stamp
-        cloud_frame = frame.cloud_frame
-        matched = frame.matched
-        camera_info = self._latest_info
-
-        self._frame_count += 1
-
-        # ── 1+2. YOLO 推理 + IoU 追踪 ─────────────────
-        t0 = time.perf_counter()
-        tracked_objects, tracks, inference_ms = self._run_inference(
-            image, camera_info)
-
-        # ── 3. 裁剪点云 ──────────────────────────────
         target_hw = (int(camera_info.height), int(camera_info.width))
         new_clouds: Dict[int, np.ndarray] = {}
 
-        if cloud_xyz is None and matched:
+        if cloud_xyz is None and frame.matched:
             self.get_logger().warn(
                 "[sync] matched=true 但 cloud_xyz=None，裁剪将跳过",
                 throttle_duration_sec=1.0)
-
-        if cloud_xyz is None and not matched:
-            # 清掉旧缓存，避免决策系统请求到上一姿态的点云。
-            self._cloud_cache.clear()
 
         for tid, obj in tracked_objects:
             mask = obj.get("mask")
@@ -556,6 +536,36 @@ class YOLOInferenceNode(Node):
             obj["cloud"] = cloud
             if cloud.shape[0] >= 10:
                 new_clouds[tid] = cloud
+
+        return new_clouds
+
+    def _inference_loop(self):
+        frame = self._acquire_frame()
+        if frame is None:
+            return
+
+        image = frame.image
+        cloud_xyz = frame.cloud_xyz
+        cloud_rgb = frame.cloud_rgb
+        cloud_stamp = frame.cloud_stamp
+        cloud_frame = frame.cloud_frame
+        matched = frame.matched
+        camera_info = self._latest_info
+
+        self._frame_count += 1
+
+        # ── 1+2. YOLO 推理 + IoU 追踪 ─────────────────
+        t0 = time.perf_counter()
+        tracked_objects, tracks, inference_ms = self._run_inference(
+            image, camera_info)
+
+        # ── 3. 裁剪点云 ──────────────────────────────
+        if cloud_xyz is None and not matched:
+            # 清掉旧缓存，避免决策系统请求到上一姿态的点云。
+            self._cloud_cache.clear()
+
+        new_clouds = self._crop_tracked_clouds(
+            tracked_objects, frame, camera_info)
 
         # 清理过期 + 写入新点云。
         # 只有本帧实际产生过同步裁剪时才更新缓存，避免旧点云跨帧残留。
