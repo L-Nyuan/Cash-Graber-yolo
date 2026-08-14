@@ -54,6 +54,7 @@ from cloud_utils import (
     stamp_text,
 )
 from node_config import NodeConfig
+from cloud_state import CloudSyncMatcher
 from image_utils import ros_image_to_numpy
 from yolo_inference import YOLOSegInference
 from object_tracker import ObjectTracker
@@ -199,8 +200,6 @@ class YOLOInferenceNode(Node):
         self._latest_cloud_rgb: Optional[np.ndarray] = None
         self._latest_cloud_stamp = None
         self._latest_cloud_frame: str = ""
-        self._cloud_buffer: List = []
-        self._cloud_msg_count = 0
         self._color_frame_id: str = "d435i_color_optical_frame"
         self._last_crop_stamp = None
         self._last_crop_frame: str = "d435i_color_optical_frame"
@@ -215,7 +214,14 @@ class YOLOInferenceNode(Node):
         self._cloud_sync_ok_count = 0
         self._cloud_sync_skip_count = 0
         self._sync_hold_count = 0
-        self._last_sync_log_time = 0.0
+
+        # ── 时间同步：点云缓冲与最近邻匹配 ──────────────
+        self._sync = CloudSyncMatcher(
+            tolerance_ns=self._sync_tolerance_ns,
+            buffer_size=self._cloud_buffer_size,
+            sync_debug=self._sync_debug,
+            logger=self.get_logger(),
+        )
 
         self._pending_color: Optional[np.ndarray] = None
         self._pending_color_stamp = None
@@ -267,77 +273,10 @@ class YOLOInferenceNode(Node):
             self._latest_cloud_stamp = msg.header.stamp
             if msg.header.frame_id:
                 self._latest_cloud_frame = msg.header.frame_id
-
-            self._cloud_buffer.append(
-                (msg.header.stamp, msg.header.frame_id, xyz, rgb))
-            if len(self._cloud_buffer) > self._cloud_buffer_size:
-                self._cloud_buffer.pop(0)
-            self._cloud_msg_count += 1
-
-            if self._sync_debug and self._cloud_msg_count <= 3:
-                self.get_logger().info(
-                    f"[cloud_cb] stamp={stamp_text(msg.header.stamp)} "
-                    f"frame={msg.header.frame_id or '(empty)'} "
-                    f"points={len(xyz)}"
-                )
+            self._sync.add_cloud(
+                msg.header.stamp, msg.header.frame_id, xyz, rgb)
         except Exception as e:
             self.get_logger().error(f"点云解码失败: {e}")
-
-    # ============================================================
-    # 时间同步匹配
-    # ============================================================
-
-    def _match_cloud_for_color(self, color_stamp):
-        """为彩色图匹配点云。
-
-        Returns:
-            (xyz, rgb, cloud_stamp, cloud_frame, delta_ns, matched)
-        """
-        if color_stamp is None or not self._cloud_buffer:
-            if color_stamp is not None and not self._cloud_buffer:
-                self.get_logger().warn(
-                    "[sync] color 已到但 cloud_buffer 为空，无法匹配",
-                    throttle_duration_sec=1.0)
-            return (None, None, None, self._color_frame_id, None, False)
-
-        t_img = stamp_ns(color_stamp)
-        best_idx = -1
-        best_d = float("inf")
-        for i, (st, _fr, _xyz, _rgb) in enumerate(self._cloud_buffer):
-            d = abs(stamp_ns(st) - t_img)
-            if d < best_d:
-                best_d = d
-                best_idx = i
-
-        if best_idx < 0:
-            return (None, None, None, self._color_frame_id, None, False)
-
-        cloud_stamp, cloud_frame, xyz, rgb = self._cloud_buffer[best_idx]
-        matched = best_d <= self._sync_tolerance_ns
-        return (xyz, rgb, cloud_stamp,
-                cloud_frame or self._color_frame_id,
-                best_d, matched)
-
-    def _log_sync(self, color_stamp, cloud_stamp, delta_ns, matched, cloud_n):
-        if not self._sync_debug:
-            return
-        now = time.time()
-        if now - self._last_sync_log_time < 0.2:
-            return
-        self._last_sync_log_time = now
-
-        if delta_ns is None:
-            self.get_logger().warn(
-                f"[sync] color={stamp_text(color_stamp)} cloud={stamp_text(cloud_stamp)} "
-                f"delta=None buffer={cloud_n} match={matched}")
-            return
-
-        delta_ms = delta_ns / 1_000_000.0
-        self.get_logger().info(
-            f"[sync] color={stamp_text(color_stamp)} "
-            f"cloud={stamp_text(cloud_stamp)} "
-            f"delta={delta_ms:.2f}ms buffer={cloud_n} match={matched}"
-        )
 
     # ============================================================
     # 按需点云请求（决策系统 → 本节点）
@@ -409,11 +348,13 @@ class YOLOInferenceNode(Node):
 
         # 点云时间同步：没有容差内匹配时，宁可本帧不裁点云，
         # 也不要把旧 mask 套到新点云上。
-        cloud_xyz, cloud_rgb, cloud_stamp, cloud_frame, delta_ns, matched = \
-            self._match_cloud_for_color(color_stamp)
+        sync = self._sync.match(color_stamp, self._color_frame_id)
+        cloud_xyz, cloud_rgb, cloud_stamp, cloud_frame, delta_ns, matched = (
+            sync.xyz, sync.rgb, sync.cloud_stamp,
+            sync.cloud_frame, sync.delta_ns, sync.matched)
 
-        self._log_sync(color_stamp, cloud_stamp, delta_ns, matched,
-                       len(self._cloud_buffer))
+        self._sync.log(color_stamp, cloud_stamp, delta_ns, matched,
+                       len(self._sync))
 
         if matched:
             self._cloud_sync_ok_count += 1
@@ -431,24 +372,24 @@ class YOLOInferenceNode(Node):
                     self._pending_color_stamp = color_stamp
                     self._pending_color_deadline = now_mono + self._pending_max_wait
                 self._sync_hold_count += 1
-                if not self._cloud_buffer:
+                if len(self._sync) == 0:
                     self.get_logger().debug(
                         f"[sync] WAIT_CLOUD color={stamp_text(color_stamp)} "
-                        f"cloud_buffer=0 cloud_msgs={self._cloud_msg_count} "
+                        f"cloud_buffer=0 cloud_msgs={self._sync.msgs} "
                         f"wait={self._pending_max_wait:.3f}s")
                 else:
                     self.get_logger().debug(
                         f"[sync] HOLD color={stamp_text(color_stamp)} "
                         f"cloud={stamp_text(cloud_stamp)} "
-                        f"delta={delta_text} buffer={len(self._cloud_buffer)} "
-                        f"cloud_msgs={self._cloud_msg_count}")
+                        f"delta={delta_text} buffer={len(self._sync)} "
+                        f"cloud_msgs={self._sync.msgs}")
                 return
 
             self.get_logger().debug(
                 f"[sync] DROP color={stamp_text(color_stamp)} "
                 f"cloud={stamp_text(cloud_stamp)} "
-                f"delta={delta_text} buffer={len(self._cloud_buffer)} "
-                f"cloud_msgs={self._cloud_msg_count}")
+                f"delta={delta_text} buffer={len(self._sync)} "
+                f"cloud_msgs={self._sync.msgs}")
 
         # 只有真正采用匹配点云时，才更新“最后一次裁剪使用的点云时间戳”。
         if matched and cloud_stamp is not None:
@@ -473,7 +414,7 @@ class YOLOInferenceNode(Node):
                 f"[诊断] color={image.shape} dtype={image.dtype} "
                 f"encoding={self._color_encoding} | "
                 f"RealSense云={None if cloud_xyz is None else cloud_xyz.shape} "
-                f"(已收 {self._cloud_msg_count} 帧) | "
+                f"(已收 {self._sync.msgs} 帧) | "
                 f"camera_info={camera_info.width}x{camera_info.height} | "
                 f"color_frame={self._color_frame_id} | "
                 f"cloud_frame={self._latest_cloud_frame or '(未收到点云)'} | "
@@ -659,14 +600,14 @@ class YOLOInferenceNode(Node):
         if self._frame_count == 0:
             self.get_logger().info(
                 f"等待首帧... color={self._color_msg_count} "
-                f"cloud={self._cloud_msg_count} "
+                f"cloud={self._sync.msgs} "
                 f"info={self._latest_info is not None}",
                 throttle_duration_sec=5.0)
             return
         avg = self._total_inference_ms / max(self._frame_count, 1)
         self.get_logger().info(
             f"[状态] {self._frame_count} 帧 | color={self._color_msg_count} "
-            f"cloud={self._cloud_msg_count} | "
+            f"cloud={self._sync.msgs} | "
             f"sync_ok={self._cloud_sync_ok_count} "
             f"sync_skip={self._cloud_sync_skip_count} "
             f"sync_hold={self._sync_hold_count} | "
