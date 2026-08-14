@@ -50,8 +50,6 @@ from cloud_utils import (
     erode_mask,
     remove_outliers_sor,
     realsense_cloud_to_xyzrgb,
-    stamp_ns,
-    stamp_text,
 )
 from node_config import NodeConfig
 from cloud_state import CloudCache, CloudSyncMatcher
@@ -121,10 +119,8 @@ class YOLOInferenceNode(Node):
 
         # ── 同步参数 ──────────────────────────────────────
         self._sync_tolerance_ns = cfg.sync_tolerance_ns
-        self._require_synced_cloud = cfg.require_synced_cloud
         self._sync_debug = cfg.sync_debug
         self._cloud_buffer_size = cfg.cloud_buffer_size
-        self._pending_max_wait = cfg.pending_max_wait
 
         # ── YOLO 模型 ────────────────────────────────────
         self.yolo = YOLOSegInference(
@@ -213,8 +209,6 @@ class YOLOInferenceNode(Node):
         self._latest_cloud_stamp = None
         self._latest_cloud_frame: str = ""
         self._color_frame_id: str = "d435i_color_optical_frame"
-        self._last_crop_stamp = None
-        self._last_crop_frame: str = "d435i_color_optical_frame"
 
         self._frame_count = 0
         self._total_inference_ms = 0.0
@@ -223,21 +217,15 @@ class YOLOInferenceNode(Node):
         self._shape_warned = False
         self._last_debug_pub = 0.0
 
-        self._cloud_sync_ok_count = 0
-        self._cloud_sync_skip_count = 0
-        self._sync_hold_count = 0
-
         # ── 时间同步：点云缓冲与最近邻匹配 ──────────────
         self._sync = CloudSyncMatcher(
             tolerance_ns=self._sync_tolerance_ns,
             buffer_size=self._cloud_buffer_size,
             sync_debug=self._sync_debug,
             logger=self.get_logger(),
+            require_synced_cloud=cfg.require_synced_cloud,
+            pending_max_wait=cfg.pending_max_wait,
         )
-
-        self._pending_color: Optional[np.ndarray] = None
-        self._pending_color_stamp = None
-        self._pending_color_deadline = 0.0
 
         # ── 定时器 ───────────────────────────────────────
         self._timer = self.create_timer(0.05, self._inference_loop)
@@ -249,7 +237,7 @@ class YOLOInferenceNode(Node):
             f"imgsz={self.get_parameter('model.imgsz').value} | "
             f"点云来源: {self._cloud_topic} | "
             f"sync.tolerance={self.get_parameter('sync.tolerance').value:.3f}s | "
-            f"sync.require_cloud={self._require_synced_cloud} | "
+            f"sync.require_cloud={cfg.require_synced_cloud} | "
             f"输出: /yolo/detections + /yolo/object_cloud"
             + (" + /yolo/debug_cloud + /yolo/markers" if self._debug_mode else "")
             + (f" | rviz2={self._rviz_config}" if self._rviz.running else "")
@@ -302,14 +290,14 @@ class YOLOInferenceNode(Node):
             self.get_logger().warn(
                 f"[Request] ID={object_id} 无有效点云 "
                 f"(缓存: {self._cloud_cache.keys()})")
-            stamp = self._last_crop_stamp or self.get_clock().now().to_msg()
-            header = Header(stamp=stamp, frame_id=self._last_crop_frame)
+            stamp = self._sync.last_crop_stamp or self.get_clock().now().to_msg()
+            header = Header(stamp=stamp, frame_id=self._sync.last_crop_frame)
             empty = build_pointcloud2(np.empty((0, 6), dtype=np.float32), header)
             self.cloud_pub.publish(empty)
             return
 
-        stamp = self._last_crop_stamp or self.get_clock().now().to_msg()
-        header = Header(stamp=stamp, frame_id=self._last_crop_frame)
+        stamp = self._sync.last_crop_stamp or self.get_clock().now().to_msg()
+        header = Header(stamp=stamp, frame_id=self._sync.last_crop_frame)
         pc2_msg = build_pointcloud2(cloud, header)
         self.cloud_pub.publish(pc2_msg)
         self.get_logger().info(
@@ -321,130 +309,41 @@ class YOLOInferenceNode(Node):
     # ============================================================
 
     def _acquire_frame(self) -> Optional[FrameData]:
-        """取一帧可处理的彩色图并完成点云时间同步决策。
-
-        Returns:
-            FrameData 或 None（无相机信息 / 无新帧 / 等待点云 HOLD 中）。
-        """
-        now_mono = time.perf_counter()
+        """取一帧可处理的彩色图并完成点云时间同步决策（含 pending 等待逻辑）。"""
         camera_info = self._latest_info
         if camera_info is None:
             return None
 
-        # 如果上一帧暂时没等到同步点云，先让 pending 帧继续匹配，
-        # 而不是把这一帧直接丢掉，从而减少 RViz 中偶发的一拍冻结。
-        if self._pending_color is not None and now_mono > self._pending_color_deadline:
-            self.get_logger().debug(
-                f"[sync] pending color {stamp_text(self._pending_color_stamp)} "
-                "超时，丢弃该帧")
-            self._pending_color = None
-            self._pending_color_stamp = None
-
-        image = self._latest_color
-        color_stamp = self._latest_color_stamp
-
-        use_pending = False
-        if self._pending_color is not None:
-            if image is None:
-                use_pending = True
-            else:
-                use_pending = (
-                    stamp_ns(self._pending_color_stamp) <= stamp_ns(color_stamp))
-
-        if use_pending:
-            image = self._pending_color
-            color_stamp = self._pending_color_stamp
-        elif image is not None:
-            # 有更新的彩色图，且没有更早的 pending 帧，直接处理新帧。
-            self._pending_color = None
-            self._pending_color_stamp = None
-            self._latest_color = None
-        else:
+        sync = self._sync.acquire(
+            self._latest_color, self._latest_color_stamp,
+            self._color_frame_id)
+        if sync is None:
             return None
-
-        # 点云时间同步：没有容差内匹配时，宁可本帧不裁点云，
-        # 也不要把旧 mask 套到新点云上。
-        sync = self._sync.match(color_stamp, self._color_frame_id)
-        cloud_xyz, cloud_rgb, cloud_stamp, cloud_frame, delta_ns, matched = (
-            sync.xyz, sync.rgb, sync.cloud_stamp,
-            sync.cloud_frame, sync.delta_ns, sync.matched)
-
-        self._sync.log(color_stamp, cloud_stamp, delta_ns, matched,
-                       len(self._sync))
-
-        if matched:
-            self._cloud_sync_ok_count += 1
-        else:
-            self._cloud_sync_skip_count += 1
-
-        delta_text = "None" if delta_ns is None else f"{delta_ns / 1e6:.2f}ms"
-
-        # 没有同步点云时默认等待一小段时间，等待对应点云回调到达。
-        # 超过 pending_max_wait 后仍不匹配，再丢弃该帧，不无限等待。
-        if not matched and self._require_synced_cloud:
-            if self._pending_max_wait > 0.0:
-                if not use_pending:
-                    self._pending_color = image
-                    self._pending_color_stamp = color_stamp
-                    self._pending_color_deadline = now_mono + self._pending_max_wait
-                self._sync_hold_count += 1
-                if len(self._sync) == 0:
-                    self.get_logger().debug(
-                        f"[sync] WAIT_CLOUD color={stamp_text(color_stamp)} "
-                        f"cloud_buffer=0 cloud_msgs={self._sync.msgs} "
-                        f"wait={self._pending_max_wait:.3f}s")
-                else:
-                    self.get_logger().debug(
-                        f"[sync] HOLD color={stamp_text(color_stamp)} "
-                        f"cloud={stamp_text(cloud_stamp)} "
-                        f"delta={delta_text} buffer={len(self._sync)} "
-                        f"cloud_msgs={self._sync.msgs}")
-                return None
-
-            self.get_logger().debug(
-                f"[sync] DROP color={stamp_text(color_stamp)} "
-                f"cloud={stamp_text(cloud_stamp)} "
-                f"delta={delta_text} buffer={len(self._sync)} "
-                f"cloud_msgs={self._sync.msgs}")
-
-        # 只有真正采用匹配点云时，才更新“最后一次裁剪使用的点云时间戳”。
-        if matched and cloud_stamp is not None:
-            self._last_crop_stamp = cloud_stamp
-            self._last_crop_frame = cloud_frame
-        elif not matched:
-            self._last_crop_stamp = None
-            self._last_crop_frame = self._color_frame_id
-
-        # 成功进入推理时，清除 pending 帧，避免下一轮重复处理。
-        self._pending_color = None
-        self._pending_color_stamp = None
-
-        if not matched and self._require_synced_cloud:
-            cloud_xyz = None
-            cloud_rgb = None
+        if sync.consumed_latest:
+            self._latest_color = None
 
         # 首帧诊断
         if not self._shape_warned:
             self._shape_warned = True
             self.get_logger().info(
-                f"[诊断] color={image.shape} dtype={image.dtype} "
+                f"[诊断] color={sync.image.shape} dtype={sync.image.dtype} "
                 f"encoding={self._color_encoding} | "
-                f"RealSense云={None if cloud_xyz is None else cloud_xyz.shape} "
+                f"RealSense云={None if sync.xyz is None else sync.xyz.shape} "
                 f"(已收 {self._sync.msgs} 帧) | "
                 f"camera_info={camera_info.width}x{camera_info.height} | "
                 f"color_frame={self._color_frame_id} | "
                 f"cloud_frame={self._latest_cloud_frame or '(未收到点云)'} | "
                 f"sync_tolerance={self._sync_tolerance_ns / 1e6:.2f}ms")
-            if cloud_xyz is None:
+            if sync.xyz is None:
                 self.get_logger().warn(
                     "[诊断] 尚未收到/未匹配 RealSense 点云！请确认相机已启动，"
                     "且命令行带 pointcloud.enable:=true；若已启动，查看 sync 日志。")
 
         return FrameData(
-            image=image, color_stamp=color_stamp,
-            cloud_xyz=cloud_xyz, cloud_rgb=cloud_rgb,
-            cloud_stamp=cloud_stamp, cloud_frame=cloud_frame,
-            matched=matched)
+            image=sync.image, color_stamp=sync.color_stamp,
+            cloud_xyz=sync.xyz, cloud_rgb=sync.rgb,
+            cloud_stamp=sync.cloud_stamp, cloud_frame=sync.cloud_frame,
+            matched=sync.matched)
 
     def _run_inference(self, image, camera_info):
         """YOLO 推理 + IoU 追踪，组装带 track_id 与空点云占位的目标列表。
@@ -557,10 +456,10 @@ class YOLOInferenceNode(Node):
                   if obj.get("cloud") is not None and obj["cloud"].shape[0] >= 10]
         if clouds and time.time() - self._last_debug_pub > self._debug_cloud_interval:
             self._last_debug_pub = time.time()
-            stamp = self._last_crop_stamp
+            stamp = self._sync.last_crop_stamp
             if stamp is None:
                 stamp = self.get_clock().now().to_msg()
-            header = Header(stamp=stamp, frame_id=self._last_crop_frame)
+            header = Header(stamp=stamp, frame_id=self._sync.last_crop_frame)
             self.debug_cloud_pub.publish(
                 build_pointcloud2(np.vstack(clouds), header))
 
@@ -666,9 +565,9 @@ class YOLOInferenceNode(Node):
         self.get_logger().info(
             f"[状态] {self._frame_count} 帧 | color={self._color_msg_count} "
             f"cloud={self._sync.msgs} | "
-            f"sync_ok={self._cloud_sync_ok_count} "
-            f"sync_skip={self._cloud_sync_skip_count} "
-            f"sync_hold={self._sync_hold_count} | "
+            f"sync_ok={self._sync.sync_ok_count} "
+            f"sync_skip={self._sync.sync_skip_count} "
+            f"sync_hold={self._sync.hold_count} | "
             f"avg {avg:.0f}ms ({1000/avg:.0f} FPS) | "
             f"活跃目标 {len(self._cloud_cache)} | mode={self._mode}",
             throttle_duration_sec=5.0)
